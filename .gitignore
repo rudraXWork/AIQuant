@@ -1,0 +1,47 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Node / frontend builds
+node_modules/
+dist/
+build/
+
+# Local DB/runtime
+*.db
+*.sqlite
+*.sqlite3
+Website/db/trading.db
+
+# Local datasets/exports
+Stocks_*.xlsx
+Stocks_*.xls
+User Trade History Analysis.html
+
+# Local ML artifacts (keep out of GitHub)
+best_model_*.pkl
+column_transformer.pkl
