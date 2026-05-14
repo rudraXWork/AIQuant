@@ -5,7 +5,13 @@ import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../api/client';
 
 const Login = () => {
-  const [isLogin, setIsLogin] = useState(true);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const initialIsLogin = !(
+    location.state?.mode === 'register' ||
+    new URLSearchParams(location.search).get('mode') === 'register'
+  );
+  const [isLogin, setIsLogin] = useState(initialIsLogin);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -23,10 +29,8 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
 
   const { login, register } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
 
-  const from = location.state?.from?.pathname || '/portfolio';
+  const from = location.state?.from?.pathname || '/overview';
 
   const handleChange = (e) => {
     setFormData({
@@ -124,25 +128,25 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
       <div className="max-w-md w-full">
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-white mb-2">
-            Trade Insights
+            AIQuant
           </h1>
-          <p className="text-gray-400">
+          <p className="text-slate-400">
             {isLogin ? 'Sign in to your account' : 'Create your account'}
           </p>
         </div>
 
         {/* Form Card */}
-        <div className="bg-gray-800 rounded-xl shadow-2xl p-8 border border-gray-700">
+        <div className="bg-slate-900/70 rounded-xl shadow-2xl p-8 border border-slate-800">
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Name field (register only) */}
             {!isLogin && (
               <div>
-                <label htmlFor="name" className="block text-sm font-medium text-gray-300 mb-2">
+                <label htmlFor="name" className="block text-sm font-medium text-slate-300 mb-2">
                   Full Name
                 </label>
                 <input
@@ -152,7 +156,7 @@ const Login = () => {
                   value={formData.name}
                   onChange={handleChange}
                   required={!isLogin}
-                  className="w-full px-4 py-3 rounded-lg bg-gray-700 text-white border border-gray-600 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 transition-colors"
+                  className="w-full px-4 py-3 rounded-lg bg-slate-900 text-white border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500 transition-colors"
                   placeholder="John Doe"
                 />
               </div>
@@ -160,7 +164,7 @@ const Login = () => {
 
             {/* Email field */}
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-2">
+              <label htmlFor="email" className="block text-sm font-medium text-slate-300 mb-2">
                 Email Address
               </label>
               <input
@@ -170,14 +174,14 @@ const Login = () => {
                 value={formData.email}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 rounded-lg bg-gray-700 text-white border border-gray-600 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 transition-colors"
+                className="w-full px-4 py-3 rounded-lg bg-slate-900 text-white border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500 transition-colors"
                 placeholder="you@example.com"
               />
             </div>
 
             {/* Password field */}
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-300 mb-2">
+              <label htmlFor="password" className="block text-sm font-medium text-slate-300 mb-2">
                 Password
               </label>
               <input
@@ -188,11 +192,11 @@ const Login = () => {
                 onChange={handleChange}
                 required
                 minLength={6}
-                className="w-full px-4 py-3 rounded-lg bg-gray-700 text-white border border-gray-600 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 transition-colors"
+                className="w-full px-4 py-3 rounded-lg bg-slate-900 text-white border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500 transition-colors"
                 placeholder="••••••••"
               />
               {!isLogin && (
-                <p className="text-xs text-gray-400 mt-1">
+                <p className="text-xs text-slate-400 mt-1">
                   Must be at least 6 characters
                 </p>
               )}
@@ -211,8 +215,8 @@ const Login = () => {
               disabled={loading}
               className={`w-full py-3 px-4 rounded-lg font-semibold text-white transition-colors ${
                 loading
-                  ? 'bg-gray-600 cursor-not-allowed'
-                  : 'bg-indigo-600 hover:bg-indigo-700'
+                  ? 'bg-slate-700 cursor-not-allowed'
+                  : 'bg-emerald-600 hover:bg-emerald-700'
               }`}
             >
               {loading ? 'Please wait...' : isLogin ? 'Sign In' : 'Create Account'}
@@ -224,7 +228,7 @@ const Login = () => {
             <button
               type="button"
               onClick={toggleMode}
-              className="text-indigo-400 hover:text-indigo-300 text-sm font-medium"
+              className="text-emerald-400 hover:text-emerald-300 text-sm font-medium"
             >
               {isLogin
                 ? "Don't have an account? Sign up"
@@ -239,7 +243,7 @@ const Login = () => {
                     setError('');
                     setForgotInfo('');
                   }}
-                  className="text-sm text-gray-400 hover:text-gray-300"
+                  className="text-sm text-slate-400 hover:text-slate-300"
                 >
                   Forgot password? Reset with Email OTP
                 </button>

@@ -21,9 +21,9 @@ This project now includes a complete **multi-user paper trading system** with au
   - Real-time P&L with live prices
 
 ### 3. **Database**
-- SQLite database (`db/trading.db`)
-- Tables: `users`, `paper_holdings`, `paper_orders`
-- Automatic initialization on server start
+- MongoDB Atlas database (set `MONGODB_URI` / `MONGODB_DB`)
+- Collections: `users`, `paper_holdings`, `paper_orders`, `paper_wallets`, `paper_intraday_positions`, `paper_intraday_squareoff_runs`
+- Automatic connection on server start
 
 ## Installation & Setup
 
@@ -35,13 +35,17 @@ npm install
 New packages added:
 - `bcrypt` - Password hashing
 - `jsonwebtoken` - JWT authentication
-- `better-sqlite3` - Database
+- `mongodb` - Database driver
 - `cors` - API security
 
 ### 2. Environment Variables
-No new environment variables required. The system uses:
-- `JWT_SECRET` (defaults to a development key - change in production!)
-- Existing Angel One credentials for market data only
+Required variables:
+- `MONGODB_URI` (MongoDB Atlas connection string)
+Optional variables:
+- `MONGODB_DB` (database name; defaults to `aiquant`)
+Existing variables:
+- `JWT_SECRET` (change in production)
+- Angel One credentials for market data only
 
 ### 3. Run the Application
 
@@ -52,7 +56,7 @@ npm run server
 This starts:
 - Paper trading API on http://localhost:3000
 - Live market data socket.io server
-- SQLite database initialization
+- MongoDB Atlas connection
 
 **Terminal 2 - Start Frontend:**
 ```bash
@@ -109,9 +113,9 @@ This starts the Vite development server (usually http://localhost:5173)
 - All trading APIs require authentication
 
 ### Data Persistence
-- User data, holdings, and orders are stored in SQLite
-- Database file: `db/trading.db`
-- To reset: delete the database file and restart server
+- User data, holdings, and orders are stored in MongoDB Atlas
+- Database name: `MONGODB_DB` (default `aiquant`)
+- To reset: drop the database or collections in Atlas and restart server
 
 ### Market Data
 - Live prices come from Angel One Market Feed (existing setup)
@@ -154,9 +158,6 @@ This starts the Vite development server (usually http://localhost:5173)
 
 ### File Structure
 ```
-db/
-  init.js           # Database setup
-  trading.db        # SQLite database (auto-created)
 middleware/
   auth.js           # JWT authentication middleware
 src/
@@ -205,6 +206,6 @@ For quick testing, you can create:
 For issues or questions about the paper trading system, check:
 - Browser console for errors
 - Server logs in terminal
-- Database contents with SQLite browser
+- MongoDB Atlas collections for database contents
 
 Enjoy paper trading! 📈

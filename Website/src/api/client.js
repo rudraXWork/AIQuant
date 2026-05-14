@@ -115,6 +115,26 @@ export const authAPI = {
       body: JSON.stringify({ email, otp, newPassword }),
     });
   },
+
+  updateProfile: async (name) => {
+    return await apiFetch('/api/auth/update-profile', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  changePassword: async (currentPassword, newPassword) => {
+    return await apiFetch('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+  },
+
+  deleteAccount: async () => {
+    return await apiFetch('/api/auth/delete-account', {
+      method: 'POST',
+    });
+  },
 };
 
 // Portfolio API
@@ -147,10 +167,14 @@ export const leaderboardAPI = {
 
 export const marketDataAPI = {
   getIntradayCandles: async (symbol, interval = 'FIVE_MINUTE', points = 60) => {
+    const parsedPoints = Number(points);
+    const safePoints = Number.isInteger(parsedPoints)
+      ? Math.min(300, Math.max(10, parsedPoints))
+      : 60;
     const params = new URLSearchParams({
       symbol: String(symbol || ''),
       interval: String(interval || 'FIVE_MINUTE'),
-      points: String(points || 60),
+      points: String(safePoints),
     });
     return await apiFetch(`/api/market/intraday-candles?${params.toString()}`);
   },

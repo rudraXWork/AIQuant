@@ -96,40 +96,40 @@ const TradingModal = ({ stock, onClose }) => {
     const totalValue = ((quantity || 1) * displayPrice).toFixed(2);
     const maxIntradayQty = Math.max(0, Math.floor(buyingPower / (displayPrice || currentPrice || 1)));
     const exceedsIntradayBuyingPower = productType === 'INTRADAY' && ((quantity || 1) * displayPrice) > buyingPower;
-    const buttonColor = isBuy ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700';
+    const buttonColor = isBuy ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700';
 
     return (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex justify-center items-center p-4">
-            <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex justify-center items-center p-4">
+            <div className="bg-slate-900/90 rounded-xl shadow-2xl w-full max-w-lg border border-slate-800">
                 
                 {/* Modal Header */}
-                <div className="p-5 border-b border-gray-700 flex justify-between items-center">
+                <div className="p-5 border-b border-slate-800 flex justify-between items-center">
                     <h2 className="text-xl font-bold text-white">Execute Trade: {stock.symbol}</h2>
-                    <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                    <button onClick={onClose} className="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
                 </div>
 
                 {/* Trade Form */}
                 <form onSubmit={handleTrade} className="p-5 space-y-4">
                     
                     {/* Stock Info */}
-                    <div className="flex justify-between text-gray-300 border-b border-gray-700 pb-3">
+                    <div className="flex justify-between text-slate-300 border-b border-slate-800 pb-3">
                         <span className="font-semibold">{stock.name}</span>
                         <span className="text-lg font-extrabold text-white">₹{currentPrice.toFixed(2)}</span>
                     </div>
 
                     {/* Buy/Sell Tabs */}
-                    <div className="flex rounded-lg overflow-hidden bg-gray-700 p-1">
+                    <div className="flex rounded-lg overflow-hidden bg-slate-800/80 p-1">
                         <button 
                             type="button"
                             onClick={() => setAction('Buy')}
-                            className={`flex-1 py-2 text-center font-bold rounded-lg transition-colors ${isBuy ? 'bg-green-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}
+                            className={`flex-1 py-2 text-center font-bold rounded-lg transition-colors ${isBuy ? 'bg-emerald-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
                         >
                             BUY
                         </button>
                         <button 
                             type="button"
                             onClick={() => setAction('Sell')}
-                            className={`flex-1 py-2 text-center font-bold rounded-lg transition-colors ${!isBuy ? 'bg-red-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}
+                            className={`flex-1 py-2 text-center font-bold rounded-lg transition-colors ${!isBuy ? 'bg-rose-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
                         >
                             SELL
                         </button>
@@ -137,13 +137,13 @@ const TradingModal = ({ stock, onClose }) => {
 
                     {/* Product Type */}
                     <div>
-                        <label className="block text-sm font-medium text-gray-300 mb-2">Product Type</label>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Product Type</label>
                         <div className="grid grid-cols-2 gap-2">
                             <button
                                 type="button"
                                 onClick={() => setProductType('DELIVERY')}
                                 className={`py-2 rounded-lg font-semibold transition-colors ${
-                                    productType === 'DELIVERY' ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                    productType === 'DELIVERY' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                                 }`}
                             >
                                 DELIVERY
@@ -152,7 +152,7 @@ const TradingModal = ({ stock, onClose }) => {
                                 type="button"
                                 onClick={() => setProductType('INTRADAY')}
                                 className={`py-2 rounded-lg font-semibold transition-colors ${
-                                    productType === 'INTRADAY' ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                    productType === 'INTRADAY' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                                 }`}
                             >
                                 INTRADAY
@@ -162,13 +162,13 @@ const TradingModal = ({ stock, onClose }) => {
 
                     {/* Order Type */}
                     <div>
-                        <label className="block text-sm font-medium text-gray-300 mb-2">Order Type</label>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Order Type</label>
                         <div className="grid grid-cols-3 gap-2">
                             <button
                                 type="button"
                                 onClick={() => setOrderType('MARKET')}
                                 className={`py-2 rounded-lg font-semibold transition-colors ${
-                                    orderType === 'MARKET' ? 'bg-teal-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                    orderType === 'MARKET' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                                 }`}
                             >
                                 MARKET
@@ -180,7 +180,7 @@ const TradingModal = ({ stock, onClose }) => {
                                     setLimitPrice(currentPrice.toFixed(2));
                                 }}
                                 className={`py-2 rounded-lg font-semibold transition-colors ${
-                                    orderType === 'LIMIT' ? 'bg-teal-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                    orderType === 'LIMIT' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                                 }`}
                             >
                                 LIMIT
@@ -192,7 +192,7 @@ const TradingModal = ({ stock, onClose }) => {
                                     setLimitPrice(currentPrice.toFixed(2));
                                 }}
                                 className={`py-2 rounded-lg font-semibold transition-colors ${
-                                    orderType === 'STOP_LOSS' ? 'bg-teal-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                    orderType === 'STOP_LOSS' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                                 }`}
                             >
                                 STOP LOSS

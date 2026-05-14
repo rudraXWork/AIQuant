@@ -11,7 +11,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
-import db from "./db/init.js";
+import { MongoClient } from "mongodb";
 import { authMiddleware, getJwtSecret } from "./middleware/auth.js";
 
 // Load environment variables
@@ -26,6 +26,8 @@ const EMAILJS_TEMPLATE_ID = process.env.EMAILJS_TEMPLATE_ID;
 const EMAILJS_PUBLIC_KEY = process.env.EMAILJS_PUBLIC_KEY;
 const EMAILJS_PRIVATE_KEY = process.env.EMAILJS_PRIVATE_KEY;
 const EMAILJS_API_URL = process.env.EMAILJS_API_URL || 'https://api.emailjs.com/api/v1.0/email/send';
+const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_DB = process.env.MONGODB_DB || 'aiquant';
 
 const smart_api = new SmartAPI({ api_key: API_KEY });
 
@@ -37,6 +39,9 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const io = new IOServer(server, { cors: { origin: "*" } });
+
+let mongoClient = null;
+let mongoDbPromise = null;
 
 let jwtToken = null;       // long token you already get
 let pollInterval = 5000;   // 5 seconds to avoid rate limiting (increased from 3s)
@@ -70,23 +75,48 @@ function extractJwtFromSession(session) {
   );
 }
 
-function getLeaderboardWindowClause(period) {
+function getLeaderboardWindowStart(period) {
+  const now = Date.now();
   switch ((period || '1M').toUpperCase()) {
     case '1D':
-      return "AND created_at >= datetime('now', '-1 day')";
+      return new Date(now - (24 * 60 * 60 * 1000));
     case '1W':
-      return "AND created_at >= datetime('now', '-7 days')";
+      return new Date(now - (7 * 24 * 60 * 60 * 1000));
     case '1M':
-      return "AND created_at >= datetime('now', '-1 month')";
+      return new Date(now - (30 * 24 * 60 * 60 * 1000));
     case '3M':
-      return "AND created_at >= datetime('now', '-3 months')";
+      return new Date(now - (90 * 24 * 60 * 60 * 1000));
     case '1Y':
-      return "AND created_at >= datetime('now', '-1 year')";
+      return new Date(now - (365 * 24 * 60 * 60 * 1000));
     case 'ALL':
-      return '';
+      return null;
     default:
-      return "AND created_at >= datetime('now', '-1 month')";
+      return new Date(now - (30 * 24 * 60 * 60 * 1000));
   }
+}
+
+async function getMongoDb() {
+  if (!MONGODB_URI) {
+    throw new Error('MONGODB_URI is required for MongoDB auth.');
+  }
+
+  if (mongoDbPromise) {
+    return mongoDbPromise;
+  }
+
+  mongoClient = new MongoClient(MONGODB_URI);
+  mongoDbPromise = mongoClient.connect().then(() => mongoClient.db(MONGODB_DB));
+  return mongoDbPromise;
+}
+
+async function getUsersCollection() {
+  const mongoDb = await getMongoDb();
+  return mongoDb.collection('users');
+}
+
+async function getCollection(name) {
+  const mongoDb = await getMongoDb();
+  return mongoDb.collection(name);
 }
 
 async function sendPasswordResetOtpEmail(email, otp) {
@@ -468,103 +498,144 @@ function isPriceWithinBand(currentPrice, requestedPrice, band = 0.1) {
   return requestedPrice >= min && requestedPrice <= max;
 }
 
-function ensureWallet(userId) {
-  const wallet = db.prepare(`
-    SELECT user_id, balance, reserved, intraday_leverage
-    FROM paper_wallets
-    WHERE user_id = ?
-  `).get(userId);
+async function ensureWallet(userId) {
+  const wallets = await getCollection('paper_wallets');
+  let wallet = await wallets.findOne({ user_id: userId });
   if (wallet) return wallet;
-  db.prepare(`INSERT INTO paper_wallets (user_id) VALUES (?)`).run(userId);
-  return db.prepare(`
-    SELECT user_id, balance, reserved, intraday_leverage
-    FROM paper_wallets
-    WHERE user_id = ?
-  `).get(userId);
+
+  const now = new Date();
+  await wallets.updateOne(
+    { user_id: userId },
+    {
+      $setOnInsert: {
+        _id: userId,
+        user_id: userId,
+        balance: 0,
+        reserved: 0,
+        intraday_leverage: 5,
+        updated_at: now,
+      },
+    },
+    { upsert: true }
+  );
+
+  wallet = await wallets.findOne({ user_id: userId });
+  return wallet;
 }
 
 function getWalletAvailableFunds(wallet) {
   return Number(wallet.balance) - Number(wallet.reserved);
 }
 
-function applyOrderFill({ orderId, userId, symbol, side, qty, fillPrice, productType, status = 'FILLED' }) {
+async function applyOrderFill({ orderId, userId, symbol, side, qty, fillPrice, productType, status = 'FILLED' }) {
+  const orders = await getCollection('paper_orders');
+  const holdings = await getCollection('paper_holdings');
+  const positions = await getCollection('paper_intraday_positions');
+
   if (productType === 'INTRADAY') {
-    const existingPosition = db.prepare(`
-      SELECT id, net_qty, avg_price
-      FROM paper_intraday_positions
-      WHERE user_id = ? AND symbol = ?
-    `).get(userId, symbol);
+    const existingPosition = await positions.findOne({ user_id: userId, symbol });
 
     const currentQty = Number(existingPosition?.net_qty || 0);
     if (side === 'SELL' && currentQty < qty) {
       throw new Error(`Insufficient intraday quantity. You have ${currentQty} shares of ${symbol}`);
     }
 
-    db.prepare(`
-      INSERT INTO paper_orders (id, user_id, symbol, product_type, order_type, side, qty, price, trigger_price, status)
-      VALUES (?, ?, ?, ?, 'MARKET', ?, ?, ?, ?, ?)
-    `).run(orderId, userId, symbol, productType, side, qty, fillPrice, fillPrice, status);
+    await orders.insertOne({
+      _id: orderId,
+      id: orderId,
+      user_id: userId,
+      symbol,
+      product_type: productType,
+      order_type: 'MARKET',
+      side,
+      qty,
+      price: fillPrice,
+      trigger_price: fillPrice,
+      reserved_amount: 0,
+      status,
+      created_at: new Date(),
+    });
 
     const newQty = side === 'BUY' ? currentQty + qty : currentQty - qty;
     if (!existingPosition && newQty > 0) {
-      db.prepare(`
-        INSERT INTO paper_intraday_positions (id, user_id, symbol, net_qty, avg_price)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(randomUUID(), userId, symbol, newQty, fillPrice);
+      const positionId = randomUUID();
+      await positions.insertOne({
+        _id: positionId,
+        id: positionId,
+        user_id: userId,
+        symbol,
+        net_qty: newQty,
+        avg_price: fillPrice,
+        updated_at: new Date(),
+      });
     } else if (existingPosition && newQty === 0) {
-      db.prepare(`DELETE FROM paper_intraday_positions WHERE user_id = ? AND symbol = ?`).run(userId, symbol);
+      await positions.deleteOne({ user_id: userId, symbol });
     } else if (existingPosition && newQty > 0) {
       let newAvgPrice = Number(existingPosition.avg_price || 0);
       if (side === 'BUY') {
         newAvgPrice = ((newAvgPrice * currentQty) + (fillPrice * qty)) / newQty;
       }
-      db.prepare(`
-        UPDATE paper_intraday_positions
-        SET net_qty = ?, avg_price = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND symbol = ?
-      `).run(newQty, newAvgPrice, userId, symbol);
+      await positions.updateOne(
+        { user_id: userId, symbol },
+        { $set: { net_qty: newQty, avg_price: newAvgPrice, updated_at: new Date() } }
+      );
     }
     return;
   }
 
   if (side === 'SELL') {
-    const holding = db.prepare(`SELECT qty FROM paper_holdings WHERE user_id = ? AND symbol = ?`).get(userId, symbol);
+    const holding = await holdings.findOne({ user_id: userId, symbol }, { projection: { qty: 1 } });
     if (!holding || Number(holding.qty) < qty) {
       throw new Error(`Insufficient quantity. You have ${holding?.qty || 0} shares of ${symbol}`);
     }
   }
 
-  db.prepare(`
-    INSERT INTO paper_orders (id, user_id, symbol, product_type, order_type, side, qty, price, trigger_price, status)
-    VALUES (?, ?, ?, ?, 'MARKET', ?, ?, ?, ?, ?)
-  `).run(orderId, userId, symbol, productType, side, qty, fillPrice, fillPrice, status);
+  await orders.insertOne({
+    _id: orderId,
+    id: orderId,
+    user_id: userId,
+    symbol,
+    product_type: productType,
+    order_type: 'MARKET',
+    side,
+    qty,
+    price: fillPrice,
+    trigger_price: fillPrice,
+    reserved_amount: 0,
+    status,
+    created_at: new Date(),
+  });
 
-  const existingHolding = db.prepare(`SELECT * FROM paper_holdings WHERE user_id = ? AND symbol = ?`).get(userId, symbol);
+  const existingHolding = await holdings.findOne({ user_id: userId, symbol });
   if (side === 'BUY') {
     if (existingHolding) {
       const totalCost = (Number(existingHolding.avg_price) * Number(existingHolding.qty)) + (fillPrice * qty);
       const totalQty = Number(existingHolding.qty) + qty;
-      db.prepare(`
-        UPDATE paper_holdings
-        SET qty = ?, avg_price = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND symbol = ?
-      `).run(totalQty, totalCost / totalQty, userId, symbol);
+      await holdings.updateOne(
+        { user_id: userId, symbol },
+        { $set: { qty: totalQty, avg_price: totalCost / totalQty, updated_at: new Date() } }
+      );
     } else {
-      db.prepare(`
-        INSERT INTO paper_holdings (id, user_id, symbol, qty, avg_price)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(randomUUID(), userId, symbol, qty, fillPrice);
+      const holdingId = randomUUID();
+      await holdings.insertOne({
+        _id: holdingId,
+        id: holdingId,
+        user_id: userId,
+        symbol,
+        qty,
+        avg_price: fillPrice,
+        updated_at: new Date(),
+      });
     }
   } else {
     const newQty = Number(existingHolding.qty) - qty;
     if (newQty === 0) {
-      db.prepare(`DELETE FROM paper_holdings WHERE user_id = ? AND symbol = ?`).run(userId, symbol);
+      await holdings.deleteOne({ user_id: userId, symbol });
     } else {
-      db.prepare(`
-        UPDATE paper_holdings
-        SET qty = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND symbol = ?
-      `).run(newQty, userId, symbol);
+      await holdings.updateOne(
+        { user_id: userId, symbol },
+        { $set: { qty: newQty, updated_at: new Date() } }
+      );
     }
   }
 }
@@ -582,142 +653,165 @@ function shouldFillConditionalOrder(orderType, side, livePrice, triggerPrice) {
   return false;
 }
 
-function executePendingOrdersForOpenMarket() {
+async function executePendingOrdersForOpenMarket() {
   if (!isMarketOpenNow()) return;
-  const pendingOrders = db.prepare(`
-    SELECT id, user_id, symbol, product_type, order_type, side, qty, price, trigger_price, reserved_amount
-    FROM paper_orders
-    WHERE status = 'PENDING'
-    ORDER BY created_at ASC
-  `).all();
+
+  const orders = await getCollection('paper_orders');
+  const holdings = await getCollection('paper_holdings');
+  const positions = await getCollection('paper_intraday_positions');
+  const wallets = await getCollection('paper_wallets');
+
+  const pendingOrders = await orders
+    .find({ status: 'PENDING' })
+    .sort({ created_at: 1 })
+    .toArray();
 
   if (!pendingOrders.length) return;
 
-  const tx = db.transaction(() => {
-    let filledCount = 0;
-    pendingOrders.forEach((order) => {
-      const livePrice = getLivePriceForSymbol(order.symbol);
-      if (!Number.isFinite(livePrice) || livePrice <= 0) {
-        return;
+  let filledCount = 0;
+  for (const order of pendingOrders) {
+    const livePrice = getLivePriceForSymbol(order.symbol);
+    if (!Number.isFinite(livePrice) || livePrice <= 0) {
+      continue;
+    }
+
+    const triggerPrice = Number(order.trigger_price || order.price || 0);
+    const shouldFill = shouldFillConditionalOrder(order.order_type, order.side, livePrice, triggerPrice);
+    if (!shouldFill) continue;
+
+    const side = String(order.side || '').toUpperCase();
+    const productType = String(order.product_type || 'DELIVERY').toUpperCase();
+    const qty = Number(order.qty);
+    const reservedAmount = Number(order.reserved_amount || 0);
+    if (!Number.isInteger(qty) || qty <= 0) continue;
+
+    const wallet = await ensureWallet(order.user_id);
+
+    if (productType === 'DELIVERY' && side === 'SELL') {
+      const holding = await holdings.findOne(
+        { user_id: order.user_id, symbol: order.symbol },
+        { projection: { qty: 1 } }
+      );
+      if (!holding || Number(holding.qty) < qty) {
+        await orders.updateOne({ _id: order._id }, { $set: { status: 'CANCELLED' } });
+        continue;
       }
+    }
+    if (productType === 'INTRADAY' && side === 'SELL') {
+      const pos = await positions.findOne(
+        { user_id: order.user_id, symbol: order.symbol },
+        { projection: { net_qty: 1 } }
+      );
+      if (!pos || Number(pos.net_qty) < qty) {
+        await orders.updateOne({ _id: order._id }, { $set: { status: 'CANCELLED' } });
+        continue;
+      }
+    }
 
-      const triggerPrice = Number(order.trigger_price || order.price || 0);
-      const shouldFill = shouldFillConditionalOrder(order.order_type, order.side, livePrice, triggerPrice);
-      if (!shouldFill) return;
-
-      const side = String(order.side || '').toUpperCase();
-      const productType = String(order.product_type || 'DELIVERY').toUpperCase();
-      const qty = Number(order.qty);
-      const reservedAmount = Number(order.reserved_amount || 0);
-      if (!Number.isInteger(qty) || qty <= 0) return;
-
-      const wallet = ensureWallet(order.user_id);
-
-      if (productType === 'DELIVERY' && side === 'SELL') {
-        const holding = db.prepare(`SELECT qty FROM paper_holdings WHERE user_id = ? AND symbol = ?`).get(order.user_id, order.symbol);
-        if (!holding || Number(holding.qty) < qty) {
-          db.prepare(`UPDATE paper_orders SET status = 'CANCELLED' WHERE id = ?`).run(order.id);
-          return;
+    if (side === 'BUY') {
+      const finalCost = livePrice * qty;
+      const requiredExtra = Math.max(0, finalCost - reservedAmount);
+      const walletAvailable = getWalletAvailableFunds(wallet);
+      if (walletAvailable < requiredExtra) {
+        await orders.updateOne({ _id: order._id }, { $set: { status: 'CANCELLED' } });
+        if (reservedAmount > 0) {
+          await wallets.updateOne(
+            { user_id: order.user_id },
+            { $inc: { reserved: -reservedAmount }, $set: { updated_at: new Date() } }
+          );
         }
+        continue;
       }
-      if (productType === 'INTRADAY' && side === 'SELL') {
-        const pos = db.prepare(`SELECT net_qty FROM paper_intraday_positions WHERE user_id = ? AND symbol = ?`).get(order.user_id, order.symbol);
-        if (!pos || Number(pos.net_qty) < qty) {
-          db.prepare(`UPDATE paper_orders SET status = 'CANCELLED' WHERE id = ?`).run(order.id);
-          return;
-        }
-      }
+    }
 
+    await orders.updateOne(
+      { _id: order._id },
+      { $set: { status: 'FILLED', price: livePrice } }
+    );
+
+    if (side === 'BUY') {
+      const finalCost = livePrice * qty;
+      await wallets.updateOne(
+        { user_id: order.user_id },
+        { $inc: { reserved: -reservedAmount, balance: -finalCost }, $set: { updated_at: new Date() } }
+      );
+    } else if (side === 'SELL') {
+      await wallets.updateOne(
+        { user_id: order.user_id },
+        { $inc: { balance: livePrice * qty }, $set: { updated_at: new Date() } }
+      );
+    }
+
+    if (productType === 'INTRADAY') {
+      const existingPosition = await positions.findOne({ user_id: order.user_id, symbol: order.symbol });
+      const currentQty = Number(existingPosition?.net_qty || 0);
+      const newQty = side === 'BUY' ? currentQty + qty : currentQty - qty;
+      if (!existingPosition && newQty > 0) {
+        const positionId = randomUUID();
+        await positions.insertOne({
+          _id: positionId,
+          id: positionId,
+          user_id: order.user_id,
+          symbol: order.symbol,
+          net_qty: newQty,
+          avg_price: livePrice,
+          updated_at: new Date(),
+        });
+      } else if (existingPosition && newQty === 0) {
+        await positions.deleteOne({ user_id: order.user_id, symbol: order.symbol });
+      } else if (existingPosition && newQty > 0) {
+        let newAvgPrice = Number(existingPosition.avg_price || 0);
+        if (side === 'BUY') {
+          newAvgPrice = ((newAvgPrice * currentQty) + (livePrice * qty)) / newQty;
+        }
+        await positions.updateOne(
+          { user_id: order.user_id, symbol: order.symbol },
+          { $set: { net_qty: newQty, avg_price: newAvgPrice, updated_at: new Date() } }
+        );
+      }
+    } else {
+      const existingHolding = await holdings.findOne({ user_id: order.user_id, symbol: order.symbol });
       if (side === 'BUY') {
-        const finalCost = livePrice * qty;
-        const requiredExtra = Math.max(0, finalCost - reservedAmount);
-        const walletAvailable = getWalletAvailableFunds(wallet);
-        if (walletAvailable < requiredExtra) {
-          db.prepare(`UPDATE paper_orders SET status = 'CANCELLED' WHERE id = ?`).run(order.id);
-          if (reservedAmount > 0) {
-            db.prepare(`
-              UPDATE paper_wallets
-              SET reserved = reserved - ?, updated_at = CURRENT_TIMESTAMP
-              WHERE user_id = ?
-            `).run(reservedAmount, order.user_id);
-          }
-          return;
-        }
-      }
-
-      db.prepare(`
-        UPDATE paper_orders
-        SET status = 'FILLED', price = ?
-        WHERE id = ?
-      `).run(livePrice, order.id);
-
-      if (side === 'BUY') {
-        const finalCost = livePrice * qty;
-        db.prepare(`
-          UPDATE paper_wallets
-          SET reserved = reserved - ?, balance = balance - ?, updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = ?
-        `).run(reservedAmount, finalCost, order.user_id);
-      } else if (side === 'SELL') {
-        db.prepare(`
-          UPDATE paper_wallets
-          SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = ?
-        `).run(livePrice * qty, order.user_id);
-      }
-
-      if (productType === 'INTRADAY') {
-        const existingPosition = db.prepare(`SELECT id, net_qty, avg_price FROM paper_intraday_positions WHERE user_id = ? AND symbol = ?`)
-          .get(order.user_id, order.symbol);
-        const currentQty = Number(existingPosition?.net_qty || 0);
-        const newQty = side === 'BUY' ? currentQty + qty : currentQty - qty;
-        if (!existingPosition && newQty > 0) {
-          db.prepare(`INSERT INTO paper_intraday_positions (id, user_id, symbol, net_qty, avg_price) VALUES (?, ?, ?, ?, ?)`)
-            .run(randomUUID(), order.user_id, order.symbol, newQty, livePrice);
-        } else if (existingPosition && newQty === 0) {
-          db.prepare(`DELETE FROM paper_intraday_positions WHERE user_id = ? AND symbol = ?`).run(order.user_id, order.symbol);
-        } else if (existingPosition && newQty > 0) {
-          let newAvgPrice = Number(existingPosition.avg_price || 0);
-          if (side === 'BUY') {
-            newAvgPrice = ((newAvgPrice * currentQty) + (livePrice * qty)) / newQty;
-          }
-          db.prepare(`UPDATE paper_intraday_positions SET net_qty = ?, avg_price = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND symbol = ?`)
-            .run(newQty, newAvgPrice, order.user_id, order.symbol);
+        if (existingHolding) {
+          const totalCost = (Number(existingHolding.avg_price) * Number(existingHolding.qty)) + (livePrice * qty);
+          const totalQty = Number(existingHolding.qty) + qty;
+          await holdings.updateOne(
+            { user_id: order.user_id, symbol: order.symbol },
+            { $set: { qty: totalQty, avg_price: totalCost / totalQty, updated_at: new Date() } }
+          );
+        } else {
+          const holdingId = randomUUID();
+          await holdings.insertOne({
+            _id: holdingId,
+            id: holdingId,
+            user_id: order.user_id,
+            symbol: order.symbol,
+            qty,
+            avg_price: livePrice,
+            updated_at: new Date(),
+          });
         }
       } else {
-        const existingHolding = db.prepare(`SELECT * FROM paper_holdings WHERE user_id = ? AND symbol = ?`).get(order.user_id, order.symbol);
-        if (side === 'BUY') {
-          if (existingHolding) {
-            const totalCost = (Number(existingHolding.avg_price) * Number(existingHolding.qty)) + (livePrice * qty);
-            const totalQty = Number(existingHolding.qty) + qty;
-            db.prepare(`UPDATE paper_holdings SET qty = ?, avg_price = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND symbol = ?`)
-              .run(totalQty, totalCost / totalQty, order.user_id, order.symbol);
-          } else {
-            db.prepare(`INSERT INTO paper_holdings (id, user_id, symbol, qty, avg_price) VALUES (?, ?, ?, ?, ?)`)
-              .run(randomUUID(), order.user_id, order.symbol, qty, livePrice);
-          }
+        const newQty = Number(existingHolding.qty) - qty;
+        if (newQty === 0) {
+          await holdings.deleteOne({ user_id: order.user_id, symbol: order.symbol });
         } else {
-          const newQty = Number(existingHolding.qty) - qty;
-          if (newQty === 0) {
-            db.prepare(`DELETE FROM paper_holdings WHERE user_id = ? AND symbol = ?`).run(order.user_id, order.symbol);
-          } else {
-            db.prepare(`UPDATE paper_holdings SET qty = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND symbol = ?`)
-              .run(newQty, order.user_id, order.symbol);
-          }
+          await holdings.updateOne(
+            { user_id: order.user_id, symbol: order.symbol },
+            { $set: { qty: newQty, updated_at: new Date() } }
+          );
         }
       }
-      filledCount += 1;
-    });
-    return filledCount;
-  });
+    }
+    filledCount += 1;
+  }
 
-    const filled = tx();
-  if (filled > 0) {
-    console.log(`✅ Executed ${filled} pending order(s) after market open.`);
+  if (filledCount > 0) {
+    console.log(`✅ Executed ${filledCount} pending order(s) after market open.`);
   }
 }
 
-function runAutoIntradaySquareOff() {
+async function runAutoIntradaySquareOff() {
   if (intradaySquareOffInFlight) {
     return;
   }
@@ -725,59 +819,61 @@ function runAutoIntradaySquareOff() {
   intradaySquareOffInFlight = true;
   try {
     const marketDate = getMarketDateKey();
-    const alreadyRun = db.prepare(`
-      SELECT market_date
-      FROM paper_intraday_squareoff_runs
-      WHERE market_date = ?
-      LIMIT 1
-    `).get(marketDate);
+    const squareoffRuns = await getCollection('paper_intraday_squareoff_runs');
+    const positions = await getCollection('paper_intraday_positions');
+    const orders = await getCollection('paper_orders');
+    const wallets = await getCollection('paper_wallets');
+
+    const alreadyRun = await squareoffRuns.findOne({ market_date: marketDate });
     if (alreadyRun) {
       return;
     }
 
-    const openPositions = db.prepare(`
-      SELECT user_id, symbol, net_qty
-      FROM paper_intraday_positions
-      WHERE net_qty > 0
-      ORDER BY user_id, symbol
-    `).all();
+    const openPositions = await positions
+      .find({ net_qty: { $gt: 0 } })
+      .sort({ user_id: 1, symbol: 1 })
+      .toArray();
 
-    const tx = db.transaction(() => {
-      let closedCount = 0;
-      openPositions.forEach((position) => {
-        const qty = Number(position.net_qty);
-        const ltp = Number(latestPricesBySymbol.get(position.symbol));
-        if (qty <= 0 || !Number.isFinite(ltp) || ltp <= 0) {
-          return;
-        }
+    let closedCount = 0;
+    for (const position of openPositions) {
+      const qty = Number(position.net_qty);
+      const ltp = Number(latestPricesBySymbol.get(position.symbol));
+      if (qty <= 0 || !Number.isFinite(ltp) || ltp <= 0) {
+        continue;
+      }
 
-        db.prepare(`
-          INSERT INTO paper_orders (id, user_id, symbol, product_type, order_type, side, qty, price, trigger_price, reserved_amount, status)
-          VALUES (?, ?, ?, 'INTRADAY', 'MARKET', 'SELL', ?, ?, ?, 0, 'FILLED')
-        `).run(randomUUID(), position.user_id, position.symbol, qty, ltp, ltp);
-
-        db.prepare(`
-          UPDATE paper_wallets
-          SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = ?
-        `).run(ltp * qty, position.user_id);
-
-        db.prepare(`
-          DELETE FROM paper_intraday_positions
-          WHERE user_id = ? AND symbol = ?
-        `).run(position.user_id, position.symbol);
-        closedCount += 1;
+      const orderId = randomUUID();
+      await orders.insertOne({
+        _id: orderId,
+        id: orderId,
+        user_id: position.user_id,
+        symbol: position.symbol,
+        product_type: 'INTRADAY',
+        order_type: 'MARKET',
+        side: 'SELL',
+        qty,
+        price: ltp,
+        trigger_price: ltp,
+        reserved_amount: 0,
+        status: 'FILLED',
+        created_at: new Date(),
       });
 
-      db.prepare(`
-        INSERT INTO paper_intraday_squareoff_runs (market_date)
-        VALUES (?)
-      `).run(marketDate);
+      await wallets.updateOne(
+        { user_id: position.user_id },
+        { $inc: { balance: ltp * qty }, $set: { updated_at: new Date() } }
+      );
 
-      return closedCount;
+      await positions.deleteOne({ user_id: position.user_id, symbol: position.symbol });
+      closedCount += 1;
+    }
+
+    await squareoffRuns.insertOne({
+      _id: marketDate,
+      market_date: marketDate,
+      executed_at: new Date(),
     });
 
-    const closedCount = tx();
     console.log(`⏱️ Auto square-off executed for ${marketDate}: closed ${closedCount} intraday position(s).`);
   } catch (error) {
     console.error('Auto intraday square-off error:', error);
@@ -786,7 +882,7 @@ function runAutoIntradaySquareOff() {
   }
 }
 
-function maybeStopPostClosePolling() {
+async function maybeStopPostClosePolling() {
   if (!isMarketClosedNow() || !hasSnapshotForAllTrackedSymbols()) {
     if (!isMarketClosedNow()) {
       marketCloseStopLogged = false;
@@ -795,7 +891,7 @@ function maybeStopPostClosePolling() {
   }
 
   if (!marketCloseStopLogged) {
-    runAutoIntradaySquareOff();
+    await runAutoIntradaySquareOff();
     console.log("🛑 Post-close polling stopped: all tracked symbols have prices and market is closed.");
     marketCloseStopLogged = true;
   }
@@ -805,7 +901,7 @@ function maybeStopPostClosePolling() {
 
 // Poll Angel quote endpoint for tokens you want
 async function pollQuotes(exchangeTokensMap = { NSE: ["26000", "50000", "26009"] }) {
-  if (maybeStopPostClosePolling()) {
+  if (await maybeStopPostClosePolling()) {
     return;
   }
 
@@ -922,7 +1018,7 @@ function splitIntoBatches(array, batchSize = 10) {
 }
 
 async function pollAllBatches() {
-  if (maybeStopPostClosePolling()) {
+  if (await maybeStopPostClosePolling()) {
     return;
   }
 
@@ -947,7 +1043,7 @@ async function pollAllBatches() {
     }
   }
 
-  executePendingOrdersForOpenMarket();
+  await executePendingOrdersForOpenMarket();
 }
 
 async function startPolling() {
@@ -966,7 +1062,7 @@ async function startPolling() {
   console.log(`📈 Exchange breakdown:`, exchangeCounts);
   console.log(`📈 Stocks: ${stockSymbols}`);
 
-  if (maybeStopPostClosePolling()) {
+  if (await maybeStopPostClosePolling()) {
     return;
   }
 
@@ -1000,14 +1096,17 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Phone must be a valid 10-digit mobile number' });
     }
 
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const users = await getUsersCollection();
+
     // Check if user exists
-    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existingUser = await users.findOne({ email: normalizedEmail }, { projection: { _id: 1 } });
     if (existingUser) {
       return res.status(400).json({ error: 'Email already registered' });
     }
 
     if (normalizedPhone) {
-      const existingPhone = db.prepare('SELECT id FROM users WHERE phone = ?').get(normalizedPhone);
+      const existingPhone = await users.findOne({ phone: normalizedPhone }, { projection: { _id: 1 } });
       if (existingPhone) {
         return res.status(400).json({ error: 'Phone already registered' });
       }
@@ -1018,15 +1117,22 @@ app.post('/api/auth/register', async (req, res) => {
     const userId = randomUUID();
 
     // Insert user
-    db.prepare('INSERT INTO users (id, name, email, phone, password_hash) VALUES (?, ?, ?, ?, ?)')
-      .run(userId, name, email, normalizedPhone, passwordHash);
+    await users.insertOne({
+      _id: userId,
+      id: userId,
+      name,
+      email: normalizedEmail,
+      phone: normalizedPhone,
+      password_hash: passwordHash,
+      created_at: new Date(),
+    });
 
     // Generate JWT
-    const token = jwt.sign({ id: userId, email, name }, getJwtSecret(), { expiresIn: '7d' });
+    const token = jwt.sign({ id: userId, email: normalizedEmail, name }, getJwtSecret(), { expiresIn: '7d' });
 
     res.json({
       token,
-      user: { id: userId, name, email, phone: normalizedPhone }
+      user: { id: userId, name, email: normalizedEmail, phone: normalizedPhone }
     });
   } catch (error) {
     console.error('Register error:', error);
@@ -1043,8 +1149,11 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const users = await getUsersCollection();
+
     // Find user
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const user = await users.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -1057,14 +1166,14 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Generate JWT
     const token = jwt.sign(
-      { id: user.id, email: user.email, name: user.name },
+      { id: user.id || user._id, email: user.email, name: user.name },
       getJwtSecret(),
       { expiresIn: '7d' }
     );
 
     res.json({
       token,
-      user: { id: user.id, name: user.name, email: user.email, phone: user.phone }
+      user: { id: user.id || user._id, name: user.name, email: user.email, phone: user.phone }
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -1073,10 +1182,13 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Get current user
-app.get('/api/auth/me', authMiddleware, (req, res) => {
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
-    const user = db.prepare('SELECT id, name, email, phone, created_at FROM users WHERE id = ?')
-      .get(req.user.id);
+    const users = await getUsersCollection();
+    const user = await users.findOne(
+      { $or: [{ _id: req.user.id }, { id: req.user.id }] },
+      { projection: { id: 1, name: 1, email: 1, phone: 1, created_at: 1 } }
+    );
     
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -1099,7 +1211,8 @@ app.post('/api/auth/request-password-otp', async (req, res) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
 
-    const user = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+    const users = await getUsersCollection();
+    const user = await users.findOne({ email: normalizedEmail }, { projection: { _id: 1 } });
 
     // Avoid user enumeration by returning success even when not found
     if (!user) {
@@ -1111,15 +1224,14 @@ app.post('/api/auth/request-password-otp', async (req, res) => {
 
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     const otpHash = await bcrypt.hash(otp, 10);
-    const expiresAtIso = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await sendPasswordResetOtpEmail(normalizedEmail, otp);
 
-    db.prepare(`
-      UPDATE users
-      SET reset_otp_hash = ?, reset_otp_expires_at = ?
-      WHERE id = ?
-    `).run(otpHash, expiresAtIso, user.id);
+    await users.updateOne(
+      { _id: user._id },
+      { $set: { reset_otp_hash: otpHash, reset_otp_expires_at: expiresAt } }
+    );
 
     return res.json({
       success: true,
@@ -1145,11 +1257,11 @@ app.post('/api/auth/reset-password-otp', async (req, res) => {
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
-    const user = db.prepare(`
-      SELECT id, reset_otp_hash, reset_otp_expires_at
-      FROM users
-      WHERE email = ?
-    `).get(normalizedEmail);
+    const users = await getUsersCollection();
+    const user = await users.findOne(
+      { email: normalizedEmail },
+      { projection: { _id: 1, reset_otp_hash: 1, reset_otp_expires_at: 1 } }
+    );
 
     if (!user || !user.reset_otp_hash || !user.reset_otp_expires_at) {
       return res.status(400).json({ error: 'Invalid or expired OTP' });
@@ -1166,11 +1278,10 @@ app.post('/api/auth/reset-password-otp', async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(String(newPassword), 10);
-    db.prepare(`
-      UPDATE users
-      SET password_hash = ?, reset_otp_hash = NULL, reset_otp_expires_at = NULL
-      WHERE id = ?
-    `).run(passwordHash, user.id);
+    await users.updateOne(
+      { _id: user._id },
+      { $set: { password_hash: passwordHash }, $unset: { reset_otp_hash: '', reset_otp_expires_at: '' } }
+    );
 
     return res.json({ success: true, message: 'Password reset successful. Please log in.' });
   } catch (error) {
@@ -1179,27 +1290,141 @@ app.post('/api/auth/reset-password-otp', async (req, res) => {
   }
 });
 
+// Update user profile
+app.post('/api/auth/update-profile', authMiddleware, async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const users = await getUsersCollection();
+    const result = await users.updateOne(
+      { $or: [{ _id: req.user.id }, { id: req.user.id }] },
+      { $set: { name: name.trim(), updated_at: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: { id: req.user.id, name: name.trim(), email: req.user.email }
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// Change password
+app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+
+    const users = await getUsersCollection();
+    const user = await users.findOne(
+      { $or: [{ _id: req.user.id }, { id: req.user.id }] },
+      { projection: { _id: 1, password_hash: 1 } }
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Verify current password
+    const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash new password
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+    await users.updateOne(
+      { _id: user._id },
+      { $set: { password_hash: newPasswordHash, updated_at: new Date() } }
+    );
+
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// Delete account
+app.post('/api/auth/delete-account', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const users = await getUsersCollection();
+
+    // Delete all user data
+    const holdingsCol = await getCollection('paper_holdings');
+    const ordersCol = await getCollection('paper_orders');
+    const walletsCol = await getCollection('wallets');
+    const intradayCol = await getCollection('paper_intraday_positions');
+
+    await Promise.all([
+      users.deleteOne({ $or: [{ _id: userId }, { id: userId }] }),
+      holdingsCol.deleteMany({ user_id: userId }),
+      ordersCol.deleteMany({ user_id: userId }),
+      walletsCol.deleteMany({ user_id: userId }),
+      intradayCol.deleteMany({ user_id: userId }),
+    ]);
+
+    res.json({ success: true, message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({ error: 'Failed to delete account' });
+  }
+});
+
 // ========================================
 // PAPER TRADING ENDPOINTS
 // ========================================
 
 // Get user's portfolio
-app.get('/api/portfolio', authMiddleware, (req, res) => {
+app.get('/api/portfolio', authMiddleware, async (req, res) => {
   try {
-    const holdings = db.prepare(`
-      SELECT id, symbol, qty, avg_price as avgPrice, updated_at
-      FROM paper_holdings
-      WHERE user_id = ? AND qty > 0
-      ORDER BY symbol
-    `).all(req.user.id);
-    const intradayPositions = db.prepare(`
-      SELECT id, symbol, net_qty as netQty, avg_price as avgPrice, updated_at
-      FROM paper_intraday_positions
-      WHERE user_id = ? AND net_qty != 0
-      ORDER BY symbol
-    `).all(req.user.id);
+    const holdingsCol = await getCollection('paper_holdings');
+    const positionsCol = await getCollection('paper_intraday_positions');
 
-    res.json({ holdings, intradayPositions });
+    const holdings = await holdingsCol
+      .find({ user_id: req.user.id, qty: { $gt: 0 } })
+      .sort({ symbol: 1 })
+      .toArray();
+    const intradayPositions = await positionsCol
+      .find({ user_id: req.user.id, net_qty: { $ne: 0 } })
+      .sort({ symbol: 1 })
+      .toArray();
+
+    res.json({
+      holdings: holdings.map((row) => ({
+        id: row.id || row._id,
+        symbol: row.symbol,
+        qty: Number(row.qty),
+        avgPrice: Number(row.avg_price),
+        updated_at: row.updated_at,
+      })),
+      intradayPositions: intradayPositions.map((row) => ({
+        id: row.id || row._id,
+        symbol: row.symbol,
+        netQty: Number(row.net_qty),
+        avgPrice: Number(row.avg_price),
+        updated_at: row.updated_at,
+      })),
+    });
   } catch (error) {
     console.error('Get portfolio error:', error);
     res.status(500).json({ error: 'Failed to fetch portfolio' });
@@ -1207,25 +1432,38 @@ app.get('/api/portfolio', authMiddleware, (req, res) => {
 });
 
 // Get user's orders
-app.get('/api/orders', authMiddleware, (req, res) => {
+app.get('/api/orders', authMiddleware, async (req, res) => {
   try {
-    const orders = db.prepare(`
-      SELECT id, symbol, product_type as productType, order_type as orderType, side, qty, price, trigger_price as triggerPrice, reserved_amount as reservedAmount, status, created_at
-      FROM paper_orders
-      WHERE user_id = ?
-      ORDER BY created_at DESC
-    `).all(req.user.id);
+    const ordersCol = await getCollection('paper_orders');
+    const orders = await ordersCol
+      .find({ user_id: req.user.id })
+      .sort({ created_at: -1 })
+      .toArray();
 
-    res.json({ orders });
+    res.json({
+      orders: orders.map((row) => ({
+        id: row.id || row._id,
+        symbol: row.symbol,
+        productType: row.product_type,
+        orderType: row.order_type,
+        side: row.side,
+        qty: Number(row.qty),
+        price: Number(row.price),
+        triggerPrice: Number(row.trigger_price),
+        reservedAmount: Number(row.reserved_amount || 0),
+        status: row.status,
+        created_at: row.created_at,
+      })),
+    });
   } catch (error) {
     console.error('Get orders error:', error);
     res.status(500).json({ error: 'Failed to fetch orders' });
   }
 });
 
-app.get('/api/wallet', authMiddleware, (req, res) => {
+app.get('/api/wallet', authMiddleware, async (req, res) => {
   try {
-    const wallet = ensureWallet(req.user.id);
+    const wallet = await ensureWallet(req.user.id);
     return res.json({
       wallet: {
         balance: Number(wallet.balance),
@@ -1240,20 +1478,21 @@ app.get('/api/wallet', authMiddleware, (req, res) => {
   }
 });
 
-app.post('/api/wallet/add-funds', authMiddleware, (req, res) => {
+app.post('/api/wallet/add-funds', authMiddleware, async (req, res) => {
   try {
     const amount = Number(req.body.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: 'Amount must be positive' });
     }
-    ensureWallet(req.user.id);
-    db.prepare(`
-      UPDATE paper_wallets
-      SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-      WHERE user_id = ?
-    `).run(amount, req.user.id);
 
-    const wallet = ensureWallet(req.user.id);
+    const wallets = await getCollection('paper_wallets');
+    await ensureWallet(req.user.id);
+    await wallets.updateOne(
+      { user_id: req.user.id },
+      { $inc: { balance: amount }, $set: { updated_at: new Date() } }
+    );
+
+    const wallet = await ensureWallet(req.user.id);
     return res.json({
       success: true,
       wallet: {
@@ -1270,7 +1509,7 @@ app.post('/api/wallet/add-funds', authMiddleware, (req, res) => {
 });
 
 // Place a paper order
-app.post('/api/orders', authMiddleware, (req, res) => {
+app.post('/api/orders', authMiddleware, async (req, res) => {
   try {
     const { symbol, side, qty, price, productType, orderType = 'MARKET', triggerPrice } = req.body;
     const userId = req.user.id;
@@ -1330,178 +1569,199 @@ app.post('/api/orders', authMiddleware, (req, res) => {
     const fillPrice = shouldFillNow ? currentPrice : parsedTriggerPrice;
     const estimatedCost = parsedTriggerPrice * parsedQty;
 
-    // Start transaction
-    const transaction = db.transaction(() => {
-      const wallet = ensureWallet(userId);
-      const availableFunds = getWalletAvailableFunds(wallet);
-      if (upperSide === 'BUY') {
-        if (availableFunds < estimatedCost) {
-          throw new Error(`Insufficient wallet balance. Required ₹${estimatedCost.toFixed(2)}, available ₹${availableFunds.toFixed(2)}`);
-        }
+    const orders = await getCollection('paper_orders');
+    const holdings = await getCollection('paper_holdings');
+    const positions = await getCollection('paper_intraday_positions');
+    const wallets = await getCollection('paper_wallets');
+
+    const wallet = await ensureWallet(userId);
+    const availableFunds = getWalletAvailableFunds(wallet);
+    if (upperSide === 'BUY') {
+      if (availableFunds < estimatedCost) {
+        throw new Error(`Insufficient wallet balance. Required ₹${estimatedCost.toFixed(2)}, available ₹${availableFunds.toFixed(2)}`);
       }
-      if (normalizedProductType === 'INTRADAY') {
-        const existingPosition = db.prepare(`
-          SELECT id, net_qty, avg_price
-          FROM paper_intraday_positions
-          WHERE user_id = ? AND symbol = ?
-        `).get(userId, upperSymbol);
+    }
 
-        const currentQty = Number(existingPosition?.net_qty || 0);
-        if (upperSide === 'SELL' && currentQty < parsedQty) {
-          throw new Error(`Insufficient intraday quantity. You have ${currentQty} shares of ${upperSymbol}`);
-        }
+    if (normalizedProductType === 'INTRADAY') {
+      const existingPosition = await positions.findOne({ user_id: userId, symbol: upperSymbol });
 
-        const orderId = randomUUID();
-        db.prepare(`
-          INSERT INTO paper_orders (id, user_id, symbol, product_type, order_type, side, qty, price, trigger_price, reserved_amount, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(orderId, userId, upperSymbol, normalizedProductType, normalizedOrderType, upperSide, parsedQty, fillPrice, parsedTriggerPrice, upperSide === 'BUY' ? estimatedCost : 0, initialStatus);
-
-        if (upperSide === 'BUY') {
-          db.prepare(`
-            UPDATE paper_wallets
-            SET reserved = reserved + ?, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-          `).run(estimatedCost, userId);
-        }
-
-        if (shouldFillNow) {
-          const newQty = upperSide === 'BUY' ? currentQty + parsedQty : currentQty - parsedQty;
-          if (!existingPosition && newQty > 0) {
-            db.prepare(`
-              INSERT INTO paper_intraday_positions (id, user_id, symbol, net_qty, avg_price)
-              VALUES (?, ?, ?, ?, ?)
-            `).run(randomUUID(), userId, upperSymbol, newQty, fillPrice);
-          } else if (existingPosition && newQty === 0) {
-            db.prepare(`
-              DELETE FROM paper_intraday_positions
-              WHERE user_id = ? AND symbol = ?
-            `).run(userId, upperSymbol);
-          } else if (existingPosition && newQty > 0) {
-            let newAvgPrice = Number(existingPosition.avg_price || 0);
-            if (upperSide === 'BUY') {
-              const totalCost = (newAvgPrice * currentQty) + (fillPrice * parsedQty);
-              newAvgPrice = totalCost / newQty;
-            }
-            db.prepare(`
-              UPDATE paper_intraday_positions
-              SET net_qty = ?, avg_price = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE user_id = ? AND symbol = ?
-            `).run(newQty, newAvgPrice, userId, upperSymbol);
-          }
-
-          if (upperSide === 'BUY') {
-            const finalCost = fillPrice * parsedQty;
-            db.prepare(`
-              UPDATE paper_wallets
-              SET reserved = reserved - ?, balance = balance - ?, updated_at = CURRENT_TIMESTAMP
-              WHERE user_id = ?
-            `).run(estimatedCost, finalCost, userId);
-          } else {
-            db.prepare(`
-              UPDATE paper_wallets
-              SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-              WHERE user_id = ?
-            `).run(fillPrice * parsedQty, userId);
-          }
-        }
-
-        return orderId;
-      }
-
-      // DELIVERY flow
-      if (upperSide === 'SELL') {
-        const holding = db.prepare('SELECT qty FROM paper_holdings WHERE user_id = ? AND symbol = ?')
-          .get(userId, upperSymbol);
-
-        if (!holding || holding.qty < parsedQty) {
-          throw new Error(`Insufficient quantity. You have ${holding?.qty || 0} shares of ${upperSymbol}`);
-        }
+      const currentQty = Number(existingPosition?.net_qty || 0);
+      if (upperSide === 'SELL' && currentQty < parsedQty) {
+        throw new Error(`Insufficient intraday quantity. You have ${currentQty} shares of ${upperSymbol}`);
       }
 
       const orderId = randomUUID();
-      db.prepare(`
-        INSERT INTO paper_orders (id, user_id, symbol, product_type, order_type, side, qty, price, trigger_price, reserved_amount, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(orderId, userId, upperSymbol, normalizedProductType, normalizedOrderType, upperSide, parsedQty, fillPrice, parsedTriggerPrice, upperSide === 'BUY' ? estimatedCost : 0, initialStatus);
+      await orders.insertOne({
+        _id: orderId,
+        id: orderId,
+        user_id: userId,
+        symbol: upperSymbol,
+        product_type: normalizedProductType,
+        order_type: normalizedOrderType,
+        side: upperSide,
+        qty: parsedQty,
+        price: fillPrice,
+        trigger_price: parsedTriggerPrice,
+        reserved_amount: upperSide === 'BUY' ? estimatedCost : 0,
+        status: initialStatus,
+        created_at: new Date(),
+      });
 
       if (upperSide === 'BUY') {
-        db.prepare(`
-          UPDATE paper_wallets
-          SET reserved = reserved + ?, updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = ?
-        `).run(estimatedCost, userId);
+        await wallets.updateOne(
+          { user_id: userId },
+          { $inc: { reserved: estimatedCost }, $set: { updated_at: new Date() } }
+        );
       }
 
-      if (!shouldFillNow) {
-        return orderId;
-      }
-
-      // Update holdings
-      const existingHolding = db.prepare('SELECT * FROM paper_holdings WHERE user_id = ? AND symbol = ?')
-        .get(userId, upperSymbol);
-
-      if (upperSide === 'BUY') {
-        if (existingHolding) {
-          // Calculate new average price
-          const totalCost = (existingHolding.avg_price * existingHolding.qty) + (fillPrice * parsedQty);
-          const totalQty = existingHolding.qty + parsedQty;
-          const newAvgPrice = totalCost / totalQty;
-
-          db.prepare(`
-            UPDATE paper_holdings
-            SET qty = ?, avg_price = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND symbol = ?
-          `).run(totalQty, newAvgPrice, userId, upperSymbol);
-        } else {
-          // Create new holding
-          const holdingId = randomUUID();
-          db.prepare(`
-            INSERT INTO paper_holdings (id, user_id, symbol, qty, avg_price)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(holdingId, userId, upperSymbol, parsedQty, fillPrice);
+      if (shouldFillNow) {
+        const newQty = upperSide === 'BUY' ? currentQty + parsedQty : currentQty - parsedQty;
+        if (!existingPosition && newQty > 0) {
+          const positionId = randomUUID();
+          await positions.insertOne({
+            _id: positionId,
+            id: positionId,
+            user_id: userId,
+            symbol: upperSymbol,
+            net_qty: newQty,
+            avg_price: fillPrice,
+            updated_at: new Date(),
+          });
+        } else if (existingPosition && newQty === 0) {
+          await positions.deleteOne({ user_id: userId, symbol: upperSymbol });
+        } else if (existingPosition && newQty > 0) {
+          let newAvgPrice = Number(existingPosition.avg_price || 0);
+          if (upperSide === 'BUY') {
+            const totalCost = (newAvgPrice * currentQty) + (fillPrice * parsedQty);
+            newAvgPrice = totalCost / newQty;
+          }
+          await positions.updateOne(
+            { user_id: userId, symbol: upperSymbol },
+            { $set: { net_qty: newQty, avg_price: newAvgPrice, updated_at: new Date() } }
+          );
         }
 
-        const finalCost = fillPrice * parsedQty;
-        db.prepare(`
-          UPDATE paper_wallets
-          SET reserved = reserved - ?, balance = balance - ?, updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = ?
-        `).run(estimatedCost, finalCost, userId);
-      } else { // SELL
-        const newQty = existingHolding.qty - parsedQty;
-        if (newQty === 0) {
-          // Remove holding
-          db.prepare('DELETE FROM paper_holdings WHERE user_id = ? AND symbol = ?')
-            .run(userId, upperSymbol);
+        if (upperSide === 'BUY') {
+          const finalCost = fillPrice * parsedQty;
+          await wallets.updateOne(
+            { user_id: userId },
+            { $inc: { reserved: -estimatedCost, balance: -finalCost }, $set: { updated_at: new Date() } }
+          );
         } else {
-          // Update quantity (keep same avg_price)
-          db.prepare(`
-            UPDATE paper_holdings
-            SET qty = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND symbol = ?
-          `).run(newQty, userId, upperSymbol);
+          await wallets.updateOne(
+            { user_id: userId },
+            { $inc: { balance: fillPrice * parsedQty }, $set: { updated_at: new Date() } }
+          );
         }
-        db.prepare(`
-          UPDATE paper_wallets
-          SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = ?
-        `).run(fillPrice * parsedQty, userId);
       }
 
-      return orderId;
+      res.json({
+        success: true,
+        orderId,
+        status: initialStatus,
+        message: initialStatus === 'PENDING'
+          ? `${upperSide} ${normalizedProductType} ${normalizedOrderType} order queued as PENDING. It will execute when market opens and conditions match.`
+          : `${upperSide} ${normalizedProductType} ${normalizedOrderType} order placed successfully`
+      });
+      return;
+    }
+
+    // DELIVERY flow
+    if (upperSide === 'SELL') {
+      const holding = await holdings.findOne({ user_id: userId, symbol: upperSymbol }, { projection: { qty: 1 } });
+
+      if (!holding || holding.qty < parsedQty) {
+        throw new Error(`Insufficient quantity. You have ${holding?.qty || 0} shares of ${upperSymbol}`);
+      }
+    }
+
+    const orderId = randomUUID();
+    await orders.insertOne({
+      _id: orderId,
+      id: orderId,
+      user_id: userId,
+      symbol: upperSymbol,
+      product_type: normalizedProductType,
+      order_type: normalizedOrderType,
+      side: upperSide,
+      qty: parsedQty,
+      price: fillPrice,
+      trigger_price: parsedTriggerPrice,
+      reserved_amount: upperSide === 'BUY' ? estimatedCost : 0,
+      status: initialStatus,
+      created_at: new Date(),
     });
 
-    const orderId = transaction();
+    if (upperSide === 'BUY') {
+      await wallets.updateOne(
+        { user_id: userId },
+        { $inc: { reserved: estimatedCost }, $set: { updated_at: new Date() } }
+      );
+    }
+
+    if (!shouldFillNow) {
+      res.json({
+        success: true,
+        orderId,
+        status: initialStatus,
+        message: `${upperSide} ${normalizedProductType} ${normalizedOrderType} order queued as PENDING. It will execute when market opens and conditions match.`
+      });
+      return;
+    }
+
+    const existingHolding = await holdings.findOne({ user_id: userId, symbol: upperSymbol });
+
+    if (upperSide === 'BUY') {
+      if (existingHolding) {
+        const totalCost = (existingHolding.avg_price * existingHolding.qty) + (fillPrice * parsedQty);
+        const totalQty = existingHolding.qty + parsedQty;
+        const newAvgPrice = totalCost / totalQty;
+
+        await holdings.updateOne(
+          { user_id: userId, symbol: upperSymbol },
+          { $set: { qty: totalQty, avg_price: newAvgPrice, updated_at: new Date() } }
+        );
+      } else {
+        const holdingId = randomUUID();
+        await holdings.insertOne({
+          _id: holdingId,
+          id: holdingId,
+          user_id: userId,
+          symbol: upperSymbol,
+          qty: parsedQty,
+          avg_price: fillPrice,
+          updated_at: new Date(),
+        });
+      }
+
+      const finalCost = fillPrice * parsedQty;
+      await wallets.updateOne(
+        { user_id: userId },
+        { $inc: { reserved: -estimatedCost, balance: -finalCost }, $set: { updated_at: new Date() } }
+      );
+    } else {
+      const newQty = existingHolding.qty - parsedQty;
+      if (newQty === 0) {
+        await holdings.deleteOne({ user_id: userId, symbol: upperSymbol });
+      } else {
+        await holdings.updateOne(
+          { user_id: userId, symbol: upperSymbol },
+          { $set: { qty: newQty, updated_at: new Date() } }
+        );
+      }
+      await wallets.updateOne(
+        { user_id: userId },
+        { $inc: { balance: fillPrice * parsedQty }, $set: { updated_at: new Date() } }
+      );
+    }
 
     res.json({
       success: true,
       orderId,
       status: initialStatus,
-      message: initialStatus === 'PENDING'
-        ? `${upperSide} ${normalizedProductType} ${normalizedOrderType} order queued as PENDING. It will execute when market opens and conditions match.`
-        : `${upperSide} ${normalizedProductType} ${normalizedOrderType} order placed successfully`
+      message: `${upperSide} ${normalizedProductType} ${normalizedOrderType} order placed successfully`
     });
+    return;
   } catch (error) {
     console.error('Place order error:', error);
     res.status(400).json({ error: error.message || 'Failed to place order' });
@@ -1509,32 +1769,40 @@ app.post('/api/orders', authMiddleware, (req, res) => {
 });
 
 // Global leaderboard based on real DB users and their paper trading returns
-app.get('/api/leaderboard', (req, res) => {
+app.get('/api/leaderboard', async (req, res) => {
   try {
     const period = (req.query.period || '1M').toString();
-    const windowClause = getLeaderboardWindowClause(period);
+    const startDate = getLeaderboardWindowStart(period);
 
-    const users = db.prepare('SELECT id, name FROM users ORDER BY name').all();
+    const usersCol = await getUsersCollection();
+    const ordersCol = await getCollection('paper_orders');
+    const holdingsCol = await getCollection('paper_holdings');
+
+    const users = await usersCol
+      .find({}, { projection: { id: 1, name: 1 } })
+      .sort({ name: 1 })
+      .toArray();
     const rankings = [];
 
-    users.forEach((user) => {
-      const orders = db.prepare(`
-        SELECT symbol, side, qty, price
-        FROM paper_orders
-        WHERE user_id = ? ${windowClause}
-          AND status = 'FILLED'
-        ORDER BY created_at ASC
-      `).all(user.id);
-
-      if (orders.length === 0) {
-        return;
+    for (const user of users) {
+      const userId = user.id || user._id;
+      const orderQuery = { user_id: userId, status: 'FILLED' };
+      if (startDate) {
+        orderQuery.created_at = { $gte: startDate };
       }
 
-      const holdings = db.prepare(`
-        SELECT symbol, qty
-        FROM paper_holdings
-        WHERE user_id = ? AND qty > 0
-      `).all(user.id);
+      const orders = await ordersCol
+        .find(orderQuery, { projection: { symbol: 1, side: 1, qty: 1, price: 1 } })
+        .sort({ created_at: 1 })
+        .toArray();
+
+      if (orders.length === 0) {
+        continue;
+      }
+
+      const holdings = await holdingsCol
+        .find({ user_id: userId, qty: { $gt: 0 } }, { projection: { symbol: 1, qty: 1 } })
+        .toArray();
 
       let buyValue = 0;
       let sellValue = 0;
@@ -1588,7 +1856,7 @@ app.get('/api/leaderboard', (req, res) => {
         trades: orders.length,
         winRate: sellCount > 0 ? (winningSells / sellCount) * 100 : 0,
       });
-    });
+    }
 
     rankings.sort((a, b) => b.return - a.return);
 
@@ -1924,12 +2192,13 @@ app.get('/api/ml/insights', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const holdings = db.prepare(`
-      SELECT symbol, qty, avg_price
-      FROM paper_holdings
-      WHERE user_id = ? AND qty > 0
-      ORDER BY symbol
-    `).all(userId);
+    const holdingsCol = await getCollection('paper_holdings');
+    const ordersCol = await getCollection('paper_orders');
+
+    const holdings = await holdingsCol
+      .find({ user_id: userId, qty: { $gt: 0 } }, { projection: { symbol: 1, qty: 1, avg_price: 1 } })
+      .sort({ symbol: 1 })
+      .toArray();
 
     if (!holdings.length) {
       const modelMeta = runRealModel({ mode: 'meta' });
@@ -1971,16 +2240,14 @@ app.get('/api/ml/insights', authMiddleware, async (req, res) => {
     }
 
     const symbols = holdings.map((h) => h.symbol);
-    const placeholders = symbols.map(() => '?').join(', ');
 
-    const orders = db.prepare(`
-      SELECT symbol, side, qty, price, created_at
-      FROM paper_orders
-      WHERE user_id = ?
-        AND status = 'FILLED'
-        AND symbol IN (${placeholders})
-      ORDER BY created_at ASC
-    `).all(userId, ...symbols);
+    const orders = await ordersCol
+      .find(
+        { user_id: userId, status: 'FILLED', symbol: { $in: symbols } },
+        { projection: { symbol: 1, side: 1, qty: 1, price: 1, created_at: 1, product_type: 1 } }
+      )
+      .sort({ created_at: 1 })
+      .toArray();
 
     const holdingRows = holdings.map((h) => {
       const ltp = num(latestPricesBySymbol.get(h.symbol), h.avg_price);
@@ -2270,12 +2537,13 @@ app.post('/api/ml/predict', authMiddleware, async (req, res) => {
     }
 
     const symbol = String(tradeData.symbol).trim().toUpperCase();
-    const holding = db.prepare(`
-      SELECT symbol, qty, avg_price
-      FROM paper_holdings
-      WHERE user_id = ? AND symbol = ? AND qty > 0
-      LIMIT 1
-    `).get(userId, symbol);
+    const holdingsCol = await getCollection('paper_holdings');
+    const ordersCol = await getCollection('paper_orders');
+
+    const holding = await holdingsCol.findOne(
+      { user_id: userId, symbol, qty: { $gt: 0 } },
+      { projection: { symbol: 1, qty: 1, avg_price: 1 } }
+    );
 
     if (!holding) {
       return res.status(400).json({
@@ -2298,12 +2566,13 @@ app.post('/api/ml/predict', authMiddleware, async (req, res) => {
       const sector = toModelSectorCategory(getSectorForSymbol(symbol));
     const industry = getIndustryForSymbol(symbol);
 
-    const symbolOrders = db.prepare(`
-      SELECT side, qty, price, created_at
-      FROM paper_orders
-      WHERE user_id = ? AND symbol = ? AND status = 'FILLED'
-      ORDER BY created_at ASC
-    `).all(userId, symbol);
+    const symbolOrders = await ordersCol
+      .find(
+        { user_id: userId, symbol, status: 'FILLED' },
+        { projection: { side: 1, qty: 1, price: 1, created_at: 1 } }
+      )
+      .sort({ created_at: 1 })
+      .toArray();
 
     const now = new Date();
     const firstBuy = symbolOrders.find((o) => String(o.side || '').toUpperCase() === 'BUY');
@@ -2383,13 +2652,15 @@ app.get('/api/ml/analysis', authMiddleware, async (req, res) => {
     const userId = req.user.id;
     
     // Get user's orders
-    const orders = db.prepare(`
-      SELECT symbol, side, qty, price, created_at
-      FROM paper_orders
-      WHERE user_id = ? AND status = 'FILLED'
-      ORDER BY created_at DESC
-      LIMIT 100
-    `).all(userId);
+    const ordersCol = await getCollection('paper_orders');
+    const orders = await ordersCol
+      .find(
+        { user_id: userId, status: 'FILLED' },
+        { projection: { symbol: 1, side: 1, qty: 1, price: 1, created_at: 1 } }
+      )
+      .sort({ created_at: -1 })
+      .limit(100)
+      .toArray();
     
     if (!orders || orders.length === 0) {
       return res.json({
@@ -2445,7 +2716,7 @@ app.get('/api/market/intraday-candles', authMiddleware, async (req, res) => {
   try {
     const symbol = normalizeTradingSymbol(req.query.symbol);
     const interval = String(req.query.interval || 'FIVE_MINUTE').toUpperCase();
-    const points = Number(req.query.points || 60);
+    const points = Number(req.query.points || 300);
 
     if (!symbol) {
       return res.status(400).json({ error: 'symbol query parameter is required' });
@@ -2453,8 +2724,8 @@ app.get('/api/market/intraday-candles', authMiddleware, async (req, res) => {
     if (!ALLOWED_INTRADAY_INTERVALS.has(interval)) {
       return res.status(400).json({ error: 'Invalid interval for intraday candles' });
     }
-    if (!Number.isInteger(points) || points < 10 || points > 300) {
-      return res.status(400).json({ error: 'points must be an integer between 10 and 300' });
+    if (!Number.isInteger(points) || points < 10 || points > 1000) {
+      return res.status(400).json({ error: 'points must be an integer between 10 and 1000' });
     }
 
     const token = getTokenForSymbol(symbol);

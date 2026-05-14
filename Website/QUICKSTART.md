@@ -84,7 +84,7 @@ Opens at http://localhost:5173
 
 1. **Paper Trading Only** - No real money, no real trades
 2. **Market Data** - Uses Angel One API for quotes only
-3. **Local Storage** - SQLite database in `db/trading.db`
+3. **Data Storage** - MongoDB Atlas (configured via `MONGODB_URI`)
 4. **Development Mode** - Not production-ready
 
 ## 🛠️ Troubleshooting
@@ -100,7 +100,7 @@ Opens at http://localhost:5173
 - Market may be closed
 
 **Database issues?**
-- Delete `db/trading.db`
+- Drop the `aiquant` database (or selected collections) in Atlas
 - Restart server
 
 ## 📱 Test Scenarios

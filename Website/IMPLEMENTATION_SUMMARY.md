@@ -12,11 +12,7 @@ A complete **multi-user paper trading system** with authentication, allowing use
 ## 📁 New Files Created
 
 ### Backend
-1. **`db/init.js`** - Database initialization
-   - SQLite setup with 3 tables: users, paper_holdings, paper_orders
-   - Foreign key constraints and indexes
-   
-2. **`middleware/auth.js`** - JWT authentication middleware
+1. **`middleware/auth.js`** - JWT authentication middleware
    - Token validation
    - Protected route middleware
    - JWT secret management
@@ -101,9 +97,9 @@ A complete **multi-user paper trading system** with authentication, allowing use
 - Auto-close on success
 
 **`package.json`** - New dependencies:
+- `mongodb` (^6.3.0) - MongoDB driver for Atlas
 - `bcrypt` (^5.1.1)
 - `jsonwebtoken` (^9.0.2)
-- `better-sqlite3` (^11.7.0)
 - `cors` (^2.8.5)
 
 ## 🔑 Key Features Implemented
@@ -129,41 +125,53 @@ A complete **multi-user paper trading system** with authentication, allowing use
 
 - **Order History**: Complete audit trail of all trades
 
-### 3. Database Schema
-```sql
--- users table
-CREATE TABLE users (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+### 3. Database Schema (MongoDB Collections)
 
--- paper_holdings table
-CREATE TABLE paper_holdings (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  symbol TEXT NOT NULL,
-  qty INTEGER NOT NULL DEFAULT 0,
-  avg_price REAL NOT NULL,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id),
-  UNIQUE(user_id, symbol)
-);
+**users collection:**
+```json
+{
+  "_id": ObjectId,
+  "email": "user@example.com",
+  "name": "User Name",
+  "password_hash": "bcrypt_hash",
+  "createdAt": ISODate
+}
+```
 
--- paper_orders table
-CREATE TABLE paper_orders (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  symbol TEXT NOT NULL,
-  side TEXT NOT NULL CHECK(side IN ('BUY', 'SELL')),
-  qty INTEGER NOT NULL,
-  price REAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'FILLED',
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id)
-);
+**paper_holdings collection:**
+```json
+{
+  "_id": ObjectId,
+  "userId": "user_email",
+  "symbol": "INFY",
+  "qty": 100,
+  "avgPrice": 1500.50,
+  "updatedAt": ISODate
+}
+```
+
+**paper_orders collection:**
+```json
+{
+  "_id": ObjectId,
+  "userId": "user_email",
+  "symbol": "INFY",
+  "side": "BUY",
+  "qty": 100,
+  "price": 1500.50,
+  "status": "FILLED",
+  "createdAt": ISODate
+}
+```
+
+**wallets collection:**
+```json
+{
+  "_id": ObjectId,
+  "userId": "user_email",
+  "balance": 100000.00,
+  "updatedAt": ISODate
+}
 ```
 
 ### 4. API Endpoints
@@ -179,10 +187,10 @@ CREATE TABLE paper_orders (
 - `POST /api/orders` - Place a paper order
 
 ### 5. Security Features
-- Password hashing with bcrypt
-- JWT token authentication
-- Protected API routes
-- SQL injection prevention (prepared statements)
+- Password hashing with bcrypt (10 salt rounds)
+- JWT token authentication (7-day expiry)
+- Protected API routes (middleware verification)
+- MongoDB injection prevention (parameterized queries)
 - CORS configuration
 - Input validation on all endpoints
 
@@ -326,7 +334,7 @@ Portfolio mounts
 
 - **No real money involved** - This is a paper trading simulator
 - **Angel One API** - Only used for live market quotes, NOT for actual trading
-- **Database** - SQLite is suitable for development/demo, use PostgreSQL/MySQL for production
+- **Database** - MongoDB Atlas for production-ready data persistence with automatic scaling
 - **JWT Expiry** - Set to 7 days, users need to re-login after that
 - **Live Prices** - Available only when market is open and server is connected
 
@@ -336,8 +344,8 @@ If you encounter issues:
 1. Check both servers are running
 2. Look at browser console for errors
 3. Check server terminal for API errors
-4. Verify `.env` file has Angel One credentials
-5. Try deleting `db/trading.db` and restarting
+4. Verify `.env` file has MongoDB URI and Angel One credentials
+5. Check MongoDB Atlas network access whitelist if connection fails
 
 ---
 

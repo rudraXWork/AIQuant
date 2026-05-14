@@ -258,11 +258,11 @@ const Markets = () => {
 
             {/* Loading indicator: show if socket not connected but fallback running */}
             {isLoading && (
-                <p className="text-indigo-400 mb-4">Fetching live market data... (Updating automatically)</p>
+                <p className="text-emerald-400 mb-4">Fetching live market data... (Updating automatically)</p>
             )}
 
             {/* --- 1. Search Bar --- */}
-            <div className="mb-8 p-6 bg-gray-800 rounded-xl shadow-2xl shadow-gray-950/50">
+            <div className="mb-8 p-6 bg-slate-900/70 rounded-xl shadow-2xl shadow-slate-950/50 border border-slate-800">
                 <label htmlFor="stock-search" className="block text-gray-300 text-lg font-medium mb-2">
                     Search Stocks by Symbol or Name
                 </label>

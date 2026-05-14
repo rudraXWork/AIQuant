@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import TradingModal from '../components/dashboard/TradingModal';
 import useMarketSocket from '../hooks/useMarketSocket';
 import { normalizeSymbol } from '../data/stocksData';
-import { portfolioAPI } from '../api/client';
+import { portfolioAPI, walletAPI } from '../api/client';
 
 // Symbol to name mapping (for display purposes)
 const SYMBOL_NAMES = {
@@ -28,13 +28,13 @@ const SYMBOL_NAMES = {
 
 // Helper component for summary cards
 const SummaryCard = ({ title, value, isPercent, isPositive }) => {
-    const valueColor = isPositive === undefined ? 'text-white' : (isPositive ? 'text-green-500' : 'text-red-500');
+    const valueColor = isPositive === undefined ? 'text-white' : (isPositive ? 'text-emerald-400' : 'text-rose-400');
     const indicator = isPositive ? '▲' : (isPositive === false ? '▼' : '');
     const formattedValue = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: isPercent ? 2 : 2 }).format(value);
 
     return (
-        <div className="bg-gray-800 p-6 rounded-xl shadow-xl border border-gray-700">
-            <h3 className="text-sm font-medium text-gray-400 uppercase mb-2">{title}</h3>
+        <div className="bg-slate-900/70 p-6 rounded-xl shadow-xl border border-slate-800">
+            <h3 className="text-sm font-medium text-slate-400 uppercase mb-2">{title}</h3>
             <div className={`text-3xl font-bold ${valueColor} flex items-center`}>
                 {isPercent ? 
                     <span className="text-2xl">{indicator} {value.toFixed(2)}%</span> : 
@@ -55,6 +55,7 @@ const Portfolio = () => {
     const [showTradingModal, setShowTradingModal] = useState(false);
     const [holdings, setHoldings] = useState([]);
     const [intradayPositions, setIntradayPositions] = useState([]);
+    const [wallet, setWallet] = useState({ intradayLeverage: 5 });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     
@@ -64,32 +65,41 @@ const Portfolio = () => {
     
     // Fetch holdings from API
     useEffect(() => {
-        const fetchHoldings = async () => {
+        const fetchData = async () => {
             try {
                 setLoading(true);
-                const data = await portfolioAPI.getHoldings();
-                setHoldings(data.holdings || []);
-                setIntradayPositions(data.intradayPositions || []);
+                const [portfolioData, walletData] = await Promise.all([
+                    portfolioAPI.getHoldings(),
+                    walletAPI.getWallet()
+                ]);
+
+                setHoldings(portfolioData.holdings || []);
+                setIntradayPositions(portfolioData.intradayPositions || []);
+                setWallet(walletData || { intradayLeverage: 5 });
                 setError(null);
             } catch (err) {
-                console.error('Failed to fetch holdings:', err);
+                console.error('Failed to fetch portfolio or wallet data:', err);
                 setError(err.message);
             } finally {
                 setLoading(false);
             }
         };
 
-        fetchHoldings();
+        fetchData();
     }, []);
 
     // Refresh holdings after a trade
-    const refreshHoldings = async () => {
+    const refreshData = async () => {
         try {
-            const data = await portfolioAPI.getHoldings();
-            setHoldings(data.holdings || []);
-            setIntradayPositions(data.intradayPositions || []);
+            const [portfolioData, walletData] = await Promise.all([
+                portfolioAPI.getHoldings(),
+                walletAPI.getWallet()
+            ]);
+            setHoldings(portfolioData.holdings || []);
+            setIntradayPositions(portfolioData.intradayPositions || []);
+            setWallet(walletData || { intradayLeverage: 5 });
         } catch (err) {
-            console.error('Failed to refresh holdings:', err);
+            console.error('Failed to refresh portfolio or wallet data:', err);
         }
     };
     
@@ -177,18 +187,25 @@ const Portfolio = () => {
 
     const formatCurrency = (value) => new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2 }).format(value);
     const intradayRows = useMemo(() => {
+        const leverage = wallet.intradayLeverage || 5;
         return intradayPositions.map((position) => {
             const livePrice = getLivePrice(position.symbol);
             const currentPrice = livePrice || position.avgPrice;
+            const positionValue = currentPrice * position.netQty;
+            const marginUsed = positionValue / leverage;
             const mtm = (currentPrice - position.avgPrice) * position.netQty;
+            
             return {
                 ...position,
                 currentPrice,
+                positionValue,
+                marginUsed,
+                leverage,
                 mtm,
                 hasLiveData: livePrice !== null,
             };
         });
-    }, [intradayPositions, livePrices]);
+    }, [intradayPositions, livePrices, wallet.intradayLeverage]);
 
     const handleStockClick = (holding) => {
         // Convert holding to stock format for the modal
@@ -207,7 +224,7 @@ const Portfolio = () => {
         setShowTradingModal(false);
         setSelectedStock(null);
         // Refresh holdings after modal closes
-        refreshHoldings();
+        refreshData();
     };
 
     // Loading state
@@ -216,8 +233,8 @@ const Portfolio = () => {
             <div className="container mx-auto p-4 sm:p-8 min-h-screen">
                 <div className="flex items-center justify-center h-64">
                     <div className="text-center">
-                        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500 mb-4"></div>
-                        <p className="text-gray-400">Loading portfolio...</p>
+                        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500 mb-4"></div>
+                        <p className="text-slate-400">Loading portfolio...</p>
                     </div>
                 </div>
             </div>
@@ -302,9 +319,9 @@ const Portfolio = () => {
                         <thead>
                             <tr className="text-left text-sm font-medium text-gray-400 uppercase tracking-wider">
                                 <th className="py-3 px-4">Stock</th>
-                                <th className="py-3 px-4 text-right">Quantity</th>
+                                <th className="py-3 px-4 text-right">Qty</th>
                                 <th className="py-3 px-4 text-right">Avg. Price (₹)</th>
-                                <th className="py-3 px-4 text-right">Current Price (₹)</th>
+                                <th className="py-3 px-4 text-right">LTP (₹)</th>
                                 <th className="py-3 px-4 text-right">Invested (₹)</th>
                                 <th className="py-3 px-4 text-right">Market Value (₹)</th>
                                 <th className="py-3 px-4 text-right">P&L (₹)</th>
@@ -363,9 +380,12 @@ const Portfolio = () => {
                         <thead>
                             <tr className="text-left text-sm font-medium text-gray-400 uppercase tracking-wider">
                                 <th className="py-3 px-4">Stock</th>
-                                <th className="py-3 px-4 text-right">Net Qty</th>
-                                <th className="py-3 px-4 text-right">Avg. Intraday Price (₹)</th>
-                                <th className="py-3 px-4 text-right">Current Price (₹)</th>
+                                <th className="py-3 px-4 text-right">Qty</th>
+                                <th className="py-3 px-4 text-right">Avg Price (₹)</th>
+                                <th className="py-3 px-4 text-right">LTP (₹)</th>
+                                <th className="py-3 px-4 text-right">Position Value (₹)</th>
+                                <th className="py-3 px-4 text-right">Margin Used (₹)</th>
+                                <th className="py-3 px-4 text-right">Leverage</th>
                                 <th className="py-3 px-4 text-right">MTM (₹)</th>
                             </tr>
                         </thead>
@@ -381,6 +401,9 @@ const Portfolio = () => {
                                             <span className="ml-2 text-xs text-green-400">● LIVE</span>
                                         )}
                                     </td>
+                                    <td className="py-3 px-4 text-right">{formatCurrency(position.positionValue)}</td>
+                                    <td className="py-3 px-4 text-right">{formatCurrency(position.marginUsed)}</td>
+                                    <td className="py-3 px-4 text-right">{position.leverage}x</td>
                                     <td className={`py-3 px-4 text-right font-bold ${position.mtm >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                                         {formatCurrency(position.mtm)}
                                     </td>
@@ -388,7 +411,7 @@ const Portfolio = () => {
                             ))}
                             {intradayRows.length === 0 && (
                                 <tr>
-                                    <td colSpan="5" className="py-6 text-center text-gray-500">
+                                    <td colSpan="8" className="py-6 text-center text-gray-500">
                                         No open intraday positions.
                                     </td>
                                 </tr>

@@ -116,7 +116,7 @@ export default function Insights() {
       setIntradayLoading(true);
       setIntradayError("");
       try {
-        const data = await marketDataAPI.getIntradayCandles(selectedSymbol, "FIVE_MINUTE", 120);
+        const data = await marketDataAPI.getIntradayCandles(selectedSymbol, "FIVE_MINUTE", 300);
         setIntradayCandles(data?.candles || []);
       } catch (err) {
         setIntradayCandles([]);
@@ -150,10 +150,12 @@ export default function Insights() {
         return { symbol: h.symbol, dayChangePct, ltp };
       })
       .sort((a, b) => b.dayChangePct - a.dayChangePct);
+    const gainers = movers.filter((m) => m.dayChangePct > 0).slice(0, 2);
+    const losers = [...movers].filter((m) => m.dayChangePct < 0).sort((a, b) => a.dayChangePct - b.dayChangePct).slice(0, 2);
     return {
       indices: indexData,
-      gainers: movers.slice(0, 5),
-      losers: [...movers].reverse().slice(0, 5),
+      gainers,
+      losers,
     };
   }, [holdings, live]);
 
@@ -238,48 +240,62 @@ export default function Insights() {
     const lows = intradayCandles.map((c) => toNum(c.low)).filter((v) => v > 0);
     const vols = intradayCandles.map((c) => toNum(c.volume)).filter((v) => v >= 0);
 
-    if (closes.length < 25 || highs.length < 25 || lows.length < 25 || vols.length < 25) {
-      return { insufficient: true };
+    const candleCount = intradayCandles.length;
+    if (candleCount < 6) {
+      return { insufficient: true, candleCount };
     }
 
     const last = closes[closes.length - 1];
     const prev = closes[closes.length - 2];
-    const recent20Closes = closes.slice(-20);
-    const recent20Highs = highs.slice(-20);
-    const recent20Lows = lows.slice(-20);
-    const prev20High = Math.max(...highs.slice(-21, -1));
-    const prev20Low = Math.min(...lows.slice(-21, -1));
+    const lookback = Math.min(20, candleCount);
+    const recentCloses = closes.slice(-lookback);
+    const recentHighs = highs.slice(-lookback);
+    const recentLows = lows.slice(-lookback);
+    const prevHighWindow = highs.slice(-(lookback + 1), -1);
+    const prevLowWindow = lows.slice(-(lookback + 1), -1);
+    const prevRecentHigh = prevHighWindow.length ? Math.max(...prevHighWindow) : Math.max(...recentHighs);
+    const prevRecentLow = prevLowWindow.length ? Math.min(...prevLowWindow) : Math.min(...recentLows);
 
-    const avgClose20 = recent20Closes.reduce((s, v) => s + v, 0) / recent20Closes.length;
-    const range20 = Math.max(...recent20Highs) - Math.min(...recent20Lows);
-    const volatilityPct = avgClose20 > 0 ? (range20 / avgClose20) * 100 : 0;
+    const avgClose = recentCloses.reduce((s, v) => s + v, 0) / recentCloses.length;
+    const range = Math.max(...recentHighs) - Math.min(...recentLows);
+    const volatilityPct = avgClose > 0 ? (range / avgClose) * 100 : 0;
 
-    const shortSma = closes.slice(-9).reduce((s, v) => s + v, 0) / 9;
-    const longSma = closes.slice(-21).reduce((s, v) => s + v, 0) / 21;
+    const shortPeriod = Math.min(9, candleCount);
+    const longPeriod = Math.min(21, candleCount);
+    const shortSma = closes.slice(-shortPeriod).reduce((s, v) => s + v, 0) / shortPeriod;
+    const longSma = closes.slice(-longPeriod).reduce((s, v) => s + v, 0) / longPeriod;
     const trend = shortSma > longSma ? "Uptrend" : shortSma < longSma ? "Downtrend" : "Sideways";
 
-    const recentVolAvg = vols.slice(-21, -1).reduce((s, v) => s + v, 0) / 20;
+    const recentVolWindow = vols.slice(-(Math.min(21, candleCount)), -1);
+    const recentVolAvg = recentVolWindow.length
+      ? recentVolWindow.reduce((s, v) => s + v, 0) / recentVolWindow.length
+      : 0;
     const lastVol = vols[vols.length - 1];
     const volumeSpike = recentVolAvg > 0 ? lastVol > recentVolAvg * 1.8 : false;
 
-    const breakoutUp = last > prev20High;
-    const breakoutDown = last < prev20Low;
+    const breakoutUp = last > prevRecentHigh;
+    const breakoutDown = last < prevRecentLow;
     const breakoutState = breakoutUp ? "Breakout Up" : breakoutDown ? "Breakdown" : "No breakout";
 
-    const momentum1hPct = closes.length > 12 && closes[closes.length - 12] > 0
-      ? ((last - closes[closes.length - 12]) / closes[closes.length - 12]) * 100
+    const momentumLookback = Math.min(12, candleCount - 1);
+    const momentumBase = closes[closes.length - 1 - momentumLookback];
+    const momentum1hPct = momentumLookback > 0 && momentumBase > 0
+      ? ((last - momentumBase) / momentumBase) * 100
       : 0;
+    const signalQuality = candleCount >= 80 ? "High" : candleCount >= 30 ? "Medium" : "Low";
 
     return {
       trend,
       volatilityPct: toNum(volatilityPct),
       breakoutState,
       volumeSpike,
-      support: Math.min(...recent20Lows),
-      resistance: Math.max(...recent20Highs),
+      support: Math.min(...recentLows),
+      resistance: Math.max(...recentHighs),
       momentum1hPct,
       lastPrice: last,
       deltaPct: prev > 0 ? ((last - prev) / prev) * 100 : 0,
+      candleCount,
+      signalQuality,
     };
   }, [intradayCandles]);
 
@@ -523,23 +539,31 @@ export default function Insights() {
             <div>
               <p className="mb-1 text-xs uppercase tracking-wide text-gray-400">Top Gainers</p>
               <div className="space-y-1">
-                {marketOverview.gainers.map((g) => (
-                  <div key={g.symbol} className="flex justify-between text-xs">
-                    <span className="text-gray-300">{g.symbol}</span>
-                    <span className="text-emerald-400">{g.dayChangePct.toFixed(2)}%</span>
-                  </div>
-                ))}
+                {marketOverview.gainers.length ? (
+                  marketOverview.gainers.map((g) => (
+                    <div key={g.symbol} className="flex justify-between text-xs">
+                      <span className="text-gray-300">{g.symbol}</span>
+                      <span className="text-emerald-400">{g.dayChangePct.toFixed(2)}%</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-gray-500">No gainers right now</p>
+                )}
               </div>
             </div>
             <div>
               <p className="mb-1 text-xs uppercase tracking-wide text-gray-400">Top Losers</p>
               <div className="space-y-1">
-                {marketOverview.losers.map((l) => (
-                  <div key={l.symbol} className="flex justify-between text-xs">
-                    <span className="text-gray-300">{l.symbol}</span>
-                    <span className="text-red-400">{l.dayChangePct.toFixed(2)}%</span>
-                  </div>
-                ))}
+                {marketOverview.losers.length ? (
+                  marketOverview.losers.map((l) => (
+                    <div key={l.symbol} className="flex justify-between text-xs">
+                      <span className="text-gray-300">{l.symbol}</span>
+                      <span className="text-red-400">{l.dayChangePct.toFixed(2)}%</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-gray-500">No losers right now</p>
+                )}
               </div>
             </div>
             <div className="h-40">
@@ -575,7 +599,9 @@ export default function Insights() {
           ) : !intradaySignals ? (
             <p className="text-sm text-gray-400">Market closed</p>
           ) : intradaySignals.insufficient ? (
-            <p className="text-sm text-gray-400">Need more intraday candles for reliable signals.</p>
+            <p className="text-sm text-gray-400">
+              Need at least 6 intraday candles. Currently received: {intradaySignals.candleCount || 0}.
+            </p>
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-3">
@@ -619,6 +645,9 @@ export default function Insights() {
               <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-3">
                 <p className="text-xs text-gray-400">Last Traded Price</p>
                 <p className="text-sm font-semibold text-white">{fmtInr(intradaySignals.lastPrice)}</p>
+                <p className="text-xs text-gray-400">
+                  Candles used: {intradaySignals.candleCount} ({intradaySignals.signalQuality} confidence)
+                </p>
               </div>
             </div>
           )}
