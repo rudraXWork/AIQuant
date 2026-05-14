@@ -1,0 +1,13 @@
+{
+  "providers": ["node", "python"],
+  "build": {
+    "commands": [
+      "npm install",
+      "python3 -m pip install -r requirements.txt",
+      "./scripts/download-ml-assets.sh"
+    ]
+  },
+  "start": {
+    "command": "node server.js"
+  }
+}

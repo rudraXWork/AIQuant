@@ -11,6 +11,8 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
+import path from "path";
+import { fileURLToPath } from "url";
 import { MongoClient } from "mongodb";
 import { authMiddleware, getJwtSecret } from "./middleware/auth.js";
 
@@ -1916,12 +1918,16 @@ const SYMBOL_SECTOR_MAP = Object.entries(STOCKS_BY_SECTOR).reduce((acc, [sector,
   return acc;
 }, {});
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, "..");
+
 const REAL_MODEL_INFO = {
   name: 'Gradient Boosting Regressor',
   r2_score: null,
 };
-const ML_PYTHON_PATH = process.env.ML_PYTHON_PATH || '/Users/rudrajena/Desktop/Trade_Insights/.venv/bin/python';
-const ML_RUNNER_PATH = process.env.ML_RUNNER_PATH || '/Users/rudrajena/Desktop/Trade_Insights/Website/src/ml/real_model_runner.py';
+const ML_PYTHON_PATH = process.env.ML_PYTHON_PATH || 'python3';
+const ML_RUNNER_PATH = process.env.ML_RUNNER_PATH || path.join(__dirname, 'src/ml/real_model_runner.py');
+const ML_MODEL_ROOT = process.env.MODEL_ROOT || PROJECT_ROOT;
 
 const SYMBOL_INDUSTRY_MAP = {
   RELIANCE: 'Oil & Gas Integrated',
@@ -2037,6 +2043,10 @@ function runRealModel(payload) {
     encoding: 'utf-8',
     timeout: 20000,
     maxBuffer: 10 * 1024 * 1024,
+    env: {
+      ...process.env,
+      MODEL_ROOT: ML_MODEL_ROOT,
+    },
   });
 
   if (proc.error) {
