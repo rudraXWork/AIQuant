@@ -35,7 +35,7 @@ const simulateLiveFetch = (currentStocks) => {
 const Markets = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedStock, setSelectedStock] = useState(null);
-    const [isLoading, setIsLoading] = useState(false);
+    const [isLoading] = useState(false);
 
     // start with initial static dataset (processed)
     const [liveStocks, setLiveStocks] = useState(

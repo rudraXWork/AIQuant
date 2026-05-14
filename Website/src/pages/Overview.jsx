@@ -1,11 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import MetricCard from '../components/dashboard/MetricCard';
 import MarketChart from '../components/dashboard/MarketChart';
 import useMarketSocket from '../hooks/useMarketSocket';
 
 const Overview = () => {
   const live = useMarketSocket("http://localhost:3000");
-  const [hasData, setHasData] = useState(false);
 
   // Mapping of dashboard symbols to AngelOne tradingsymbols
   const METRICS_MAP = {
@@ -20,7 +19,6 @@ const Overview = () => {
     const hasLiveData = Object.keys(live).length > 0;
     if (hasLiveData) {
       console.log("📊 Overview received live data:", live);
-      setHasData(true);
     }
     
     return Object.entries(METRICS_MAP).map(([title, symbol]) => {
