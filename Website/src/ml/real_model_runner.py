@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -7,9 +8,9 @@ import joblib
 import numpy as np
 import pandas as pd
 
-ROOT_DIR = Path("/Users/rudrajena/Desktop/Trade_Insights")
-MODEL_PATH = ROOT_DIR / "best_model_gradient_boosting.pkl"
-TRANSFORMER_PATH = ROOT_DIR / "column_transformer.pkl"
+ROOT_DIR = Path(os.getenv("MODEL_ROOT", "/app"))
+MODEL_PATH = Path(os.getenv("MODEL_PATH", str(ROOT_DIR / "best_model_gradient_boosting.pkl")))
+TRANSFORMER_PATH = Path(os.getenv("TRANSFORMER_PATH", str(ROOT_DIR / "column_transformer.pkl")))
 
 MODEL = joblib.load(MODEL_PATH)
 CT = joblib.load(TRANSFORMER_PATH)
