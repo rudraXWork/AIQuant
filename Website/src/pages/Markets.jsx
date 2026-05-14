@@ -1,7 +1,7 @@
 // markets.jsx
 
 // src/components/dashboard/MarketChart.jsx  (or wherever your Markets component lives)
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import TopStocksList from '../components/dashboard/TopStocksList';
 import TradingModal from '../components/dashboard/TradingModal';
 // Import data from the new tokenSymbolMap-based file
