@@ -2,10 +2,23 @@
   "$schema": "https://schema.railpack.com",
   "provider": "node",
   "packages": {
+    "node": "20",
     "python": "3.10"
   },
-  "cmds": {
-    "install": "npm install && python3 -m pip install --upgrade pip && python3 -m pip install -r requirements.txt"
+  "steps": {
+    "install": {
+      "commands": [
+        "npm install",
+        "python3 -m pip install --upgrade pip",
+        "python3 -m pip install -r requirements.txt"
+      ]
+    },
+    "build": {
+      "inputs": [{ "step": "install" }],
+      "commands": [
+        "./scripts/download-ml-assets.sh"
+      ]
+    }
   },
   "deploy": {
     "startCommand": "node server.js"
