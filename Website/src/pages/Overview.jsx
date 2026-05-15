@@ -4,7 +4,7 @@ import MarketChart from '../components/dashboard/MarketChart';
 import useMarketSocket from '../hooks/useMarketSocket';
 
 const Overview = () => {
-  const live = useMarketSocket("http://localhost:3000");
+  const live = useMarketSocket();
 
   // Mapping of dashboard symbols to AngelOne tradingsymbols
   const METRICS_MAP = {

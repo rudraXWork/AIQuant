@@ -58,7 +58,7 @@ function LoadingSkeleton() {
 }
 
 export default function Insights() {
-  const live = useMarketSocket("http://localhost:3000");
+  const live = useMarketSocket();
   const [mlData, setMlData] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [wallet, setWallet] = useState({ balance: 0, reserved: 0, available: 0 });

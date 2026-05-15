@@ -60,7 +60,7 @@ const Portfolio = () => {
     const [error, setError] = useState(null);
     
     // Get live market data
-    const livePrices = useMarketSocket("http://localhost:3000");
+    const livePrices = useMarketSocket();
     const [hasLiveData, setHasLiveData] = useState(false);
     
     // Fetch holdings from API

@@ -15,7 +15,9 @@ const REVERSE_ALIAS_MAP = Object.fromEntries(
   Object.entries(SYMBOL_ALIAS_MAP).map(([display, api]) => [api, display])
 );
 
-export default function useMarketSocket(url = "http://localhost:3000") {
+const DEFAULT_API_URL = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
+
+export default function useMarketSocket(url = DEFAULT_API_URL) {
   const [latest, setLatest] = useState({});
 
   useEffect(() => {

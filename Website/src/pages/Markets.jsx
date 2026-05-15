@@ -62,8 +62,8 @@ const Markets = () => {
     // ---------- SOCKET SETUP ----------
     const socketRef = useRef(null);
     useEffect(() => {
-        // change URL if your backend runs elsewhere
-        const SOCKET_URL = "http://localhost:3000";
+        // determine backend URL from Vite env or window origin
+        const SOCKET_URL = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
         socketRef.current = io(SOCKET_URL, { transports: ["websocket"] });
 
         socketRef.current.on("connect", () => {

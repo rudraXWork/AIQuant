@@ -7,8 +7,8 @@ import useMarketSocket from '../../hooks/useMarketSocket';
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
 const MarketChart = () => {
-    // Get live market data
-    const liveData = useMarketSocket("http://localhost:3000");
+    // Get live market data (uses VITE_API_URL or window.location.origin)
+    const liveData = useMarketSocket();
     
     // Store historical data for the chart (last 30 data points)
     const [historicalData, setHistoricalData] = useState({
