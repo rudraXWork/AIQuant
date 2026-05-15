@@ -37,3 +37,5 @@ services:
         sync: false
       - key: MODEL_ROOT
         value: /opt/render/project/src
+      - key: PYTHON_VERSION
+        value: 3.11.9
