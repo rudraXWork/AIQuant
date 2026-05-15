@@ -49,6 +49,34 @@ npm run dev
 - Market news and insights
 - Forgot password via real email OTP (EmailJS)
 
+## Render Deployment (Backend)
+
+### 1. Create a Render Web Service
+- Connect your GitHub repo
+- **Root Directory**: `Website`
+
+### 2. Build & Start Commands
+- **Build Command**:
+	```bash
+	npm install && python3 -m pip install -r requirements.txt && ./scripts/download-ml-assets.sh
+	```
+- **Start Command**:
+	```bash
+	node server.js
+	```
+
+### 3. Environment Variables
+Set all backend vars in Render:
+- `MONGODB_URI`, `MONGODB_DB`
+- `JWT_SECRET`
+- `API_KEY`, `CLIENT_CODE`, `PASSWORD`, `TOTP_SECRET`
+- `EMAILJS_SERVICE_ID`, `EMAILJS_TEMPLATE_ID`, `EMAILJS_PUBLIC_KEY`, `EMAILJS_PRIVATE_KEY`, `EMAILJS_API_URL`
+- `MODEL_URL`, `TRANSFORMER_URL` (for ML assets)
+- Optional: `MODEL_ROOT`, `MODEL_PATH`, `TRANSFORMER_PATH`
+
+### 4. Frontend API URL
+Set `VITE_API_URL` in your frontend host (Vercel) to your Render service URL.
+
 ## Email OTP Setup (EmailJS)
 
 1. Create an account at EmailJS and create an Email Service.

@@ -87,6 +87,29 @@ Opens at http://localhost:5173
 3. **Data Storage** - MongoDB Atlas (configured via `MONGODB_URI`)
 4. **Development Mode** - Not production-ready
 
+## 🚀 Render Backend Hosting (Production)
+
+### Render Setup
+- Root Directory: `Website`
+- Build Command:
+   ```bash
+   npm install && python3 -m pip install -r requirements.txt && ./scripts/download-ml-assets.sh
+   ```
+- Start Command:
+   ```bash
+   node server.js
+   ```
+
+### Required Env Vars
+- `MONGODB_URI`, `MONGODB_DB`
+- `JWT_SECRET`
+- `API_KEY`, `CLIENT_CODE`, `PASSWORD`, `TOTP_SECRET`
+- `EMAILJS_SERVICE_ID`, `EMAILJS_TEMPLATE_ID`, `EMAILJS_PUBLIC_KEY`, `EMAILJS_PRIVATE_KEY`, `EMAILJS_API_URL`
+- `MODEL_URL`, `TRANSFORMER_URL`
+
+### Frontend
+- Set `VITE_API_URL` to the Render service URL and redeploy the frontend.
+
 ## 🛠️ Troubleshooting
 
 **Can't login?**

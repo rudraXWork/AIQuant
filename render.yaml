@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: trade-insights-backend
+    env: node
+    rootDir: Website
+    buildCommand: npm install
+    startCommand: npm run server
+    autoDeploy: true
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: EMAILJS_SERVICE_ID
+        sync: false
+      - key: EMAILJS_TEMPLATE_ID
+        sync: false
+      - key: EMAILJS_PUBLIC_KEY
+        sync: false
+      - key: EMAILJS_PRIVATE_KEY
+        sync: false
+      - key: EMAILJS_API_URL
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: CLIENT_CODE
+        sync: false
+      - key: PASSWORD
+        sync: false
+      - key: TOTP_SECRET
+        sync: false
+      - key: MODEL_URL
+        sync: false
+      - key: TRANSFORMER_URL
+        sync: false
