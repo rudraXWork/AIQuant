@@ -3,7 +3,7 @@ services:
     name: trade-insights-backend
     env: node
     rootDir: Website
-    buildCommand: npm install
+    buildCommand: python3 -m pip install -r requirements.txt && npm install && MODEL_ROOT=/opt/render/project/src bash scripts/download-ml-assets.sh
     startCommand: npm run server
     autoDeploy: true
     envVars:
@@ -35,3 +35,5 @@ services:
         sync: false
       - key: TRANSFORMER_URL
         sync: false
+      - key: MODEL_ROOT
+        value: /opt/render/project/src
